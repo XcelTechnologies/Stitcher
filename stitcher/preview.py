@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Stitch preview.
 
 Renders the *encoded* pattern the way a machine would run it: solid coloured

@@ -144,3 +144,7 @@ bundle with `packaging/entitlements.plist`, submits it to Apple's notary
 service (`--wait`), and staples the ticket. Pass only `--sign` to sign without
 notarizing. Override the bundle id with `--bundle-id` (default
 `com.stitcher.app`).
+
+## License
+
+Released under the [MIT License](LICENSE).

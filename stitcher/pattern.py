@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Convert the drawing model into a pyembroidery pattern.
 
 Responsibilities:

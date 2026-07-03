@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Tests for stitch generation, fills, and machine-file I/O."""
 
 import math

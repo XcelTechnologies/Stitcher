@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """App icon assets, plus a helper to regenerate the raster icons from the SVG.
 
 The canonical logo is ``icon.svg``. Run :func:`regenerate` after changing it to

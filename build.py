@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
 """Build (and optionally sign + notarize) a standalone Stitcher app.
 
 Plain local build — produces a double-clickable app under dist/:

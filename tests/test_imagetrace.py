@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Tests for image auto-digitizing (needs Qt + numpy)."""
 
 from stitcher.model import Design

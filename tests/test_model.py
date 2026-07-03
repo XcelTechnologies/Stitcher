@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Tests for the pure data model (no Qt needed)."""
 
 from stitcher.model import (

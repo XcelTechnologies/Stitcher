@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Tests for turning text into glyph contours (needs Qt)."""
 
 from stitcher.text import text_to_contours, text_size_mm

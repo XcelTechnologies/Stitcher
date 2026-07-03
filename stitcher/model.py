@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Drawing data model.
 
 The model is stored in millimetres so it stays independent of the on-screen

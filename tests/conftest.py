@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Shared pytest fixtures.
 
 The GUI-facing code (canvas, app, text outlines, image tracing) needs a Qt

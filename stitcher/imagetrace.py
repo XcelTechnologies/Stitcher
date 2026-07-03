@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Auto-digitize a raster image (PNG/JPG/…) into fillable regions.
 
 Pipeline for a flat-colour / logo-style image:

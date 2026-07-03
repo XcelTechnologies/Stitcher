@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Freehand drawing canvas.
 
 Tools:

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Tests for the main window: toolbar wiring, selection editing, dialogs."""
 
 import pytest

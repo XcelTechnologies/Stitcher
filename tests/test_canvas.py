@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Tests for the drawing canvas: hit-testing, selection, move, delete."""
 
 import pytest

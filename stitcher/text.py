@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Turn text into glyph outline contours (in millimetres).
 
 We reuse Qt's font machinery — which PySide6 already pulls in — to avoid an

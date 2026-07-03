@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Main application window: drawing canvas + live stitch preview + file I/O."""
 
 from __future__ import annotations
