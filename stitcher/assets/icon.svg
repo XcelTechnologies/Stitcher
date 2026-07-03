@@ -1,0 +1,58 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <title>Stitch App Logo - Sky Blue</title>
+  <rect x="0" y="0" width="1024" height="1024" rx="180" fill="#f0f6ff"/>
+  <rect x="40" y="40" width="944" height="944" rx="150" fill="none" stroke="#3b82f6" stroke-width="3" stroke-dasharray="20 16" opacity="0.3"/>
+  <rect x="230" y="668" width="564" height="90" rx="16" fill="#dbeafe"/>
+  <rect x="340" y="675" width="140" height="14" rx="5" fill="#93c5fd"/>
+  <rect x="344" y="679" width="10" height="6" rx="2" fill="#3b82f6" opacity="0.7"/>
+  <rect x="360" y="679" width="10" height="6" rx="2" fill="#3b82f6" opacity="0.7"/>
+  <rect x="376" y="679" width="10" height="6" rx="2" fill="#3b82f6" opacity="0.7"/>
+  <rect x="392" y="679" width="10" height="6" rx="2" fill="#3b82f6" opacity="0.7"/>
+  <rect x="408" y="679" width="10" height="6" rx="2" fill="#3b82f6" opacity="0.7"/>
+  <rect x="424" y="679" width="10" height="6" rx="2" fill="#3b82f6" opacity="0.7"/>
+  <rect x="440" y="679" width="10" height="6" rx="2" fill="#3b82f6" opacity="0.7"/>
+  <rect x="456" y="679" width="10" height="6" rx="2" fill="#3b82f6" opacity="0.7"/>
+  <rect x="230" y="440" width="330" height="234" rx="20" fill="#ffffff" stroke="#dbeafe" stroke-width="2"/>
+  <rect x="230" y="310" width="564" height="136" rx="22" fill="#ffffff" stroke="#dbeafe" stroke-width="2"/>
+  <rect x="714" y="310" width="80" height="452" rx="22" fill="#ffffff" stroke="#dbeafe" stroke-width="2"/>
+  <rect x="250" y="460" width="290" height="196" rx="14" fill="#eff6ff"/>
+  <rect x="250" y="460" width="16" height="196" rx="6" fill="#3b82f6"/>
+  <rect x="250" y="326" width="528" height="90" rx="12" fill="#f0f6ff"/>
+  <circle cx="754" cy="516" r="60" fill="#eff6ff" stroke="#3b82f6" stroke-width="3"/>
+  <circle cx="754" cy="516" r="42" fill="#f0f6ff"/>
+  <circle cx="754" cy="516" r="16" fill="#3b82f6"/>
+  <line x1="754" y1="456" x2="754" y2="500" stroke="#3b82f6" stroke-width="3" stroke-linecap="round"/>
+  <line x1="754" y1="532" x2="754" y2="576" stroke="#3b82f6" stroke-width="3" stroke-linecap="round"/>
+  <line x1="694" y1="516" x2="738" y2="516" stroke="#3b82f6" stroke-width="3" stroke-linecap="round"/>
+  <line x1="770" y1="516" x2="814" y2="516" stroke="#3b82f6" stroke-width="3" stroke-linecap="round"/>
+  <line x1="712" y1="474" x2="740" y2="502" stroke="#3b82f6" stroke-width="3" stroke-linecap="round"/>
+  <line x1="768" y1="530" x2="796" y2="558" stroke="#3b82f6" stroke-width="3" stroke-linecap="round"/>
+  <line x1="796" y1="474" x2="768" y2="502" stroke="#3b82f6" stroke-width="3" stroke-linecap="round"/>
+  <line x1="740" y1="530" x2="712" y2="558" stroke="#3b82f6" stroke-width="3" stroke-linecap="round"/>
+  <circle cx="360" cy="366" r="18" fill="#eff6ff" stroke="#3b82f6" stroke-width="2"/>
+  <circle cx="360" cy="366" r="9" fill="#3b82f6"/>
+  <circle cx="440" cy="366" r="14" fill="#eff6ff" stroke="#3b82f6" stroke-width="2"/>
+  <circle cx="440" cy="366" r="7" fill="#3b82f6"/>
+  <rect x="616" y="320" width="30" height="60" rx="6" fill="#93c5fd" opacity="0.9"/>
+  <rect x="610" y="320" width="42" height="10" rx="3" fill="#60a5fa"/>
+  <rect x="610" y="370" width="42" height="10" rx="3" fill="#60a5fa"/>
+  <rect x="614" y="330" width="34" height="40" rx="2" fill="#f59e0b" opacity="0.9"/>
+  <path d="M631 320 L631 290 L512 290 L512 310" fill="none" stroke="#3b82f6" stroke-width="3" stroke-linecap="round"/>
+  <rect x="346" y="640" width="34" height="44" rx="4" fill="#bfdbfe"/>
+  <rect x="356" y="588" width="8" height="88" rx="3" fill="#93c5fd" stroke="#bfdbfe" stroke-width="0.5"/>
+  <ellipse cx="360" cy="640" rx="3" ry="6" fill="none" stroke="#3b82f6" stroke-width="2"/>
+  <path d="M360 646 Q348 664 360 680 Q372 696 360 712" fill="none" stroke="#3b82f6" stroke-width="4" stroke-linecap="round" opacity="0.9"/>
+  <path d="M360 714 Q385 724 410 714 Q435 704 460 714 Q485 724 510 714 Q535 704 560 714 Q585 724 610 714 Q635 704 660 714 Q685 724 710 714" fill="none" stroke="#3b82f6" stroke-width="4" stroke-linecap="round" opacity="0.6"/>
+  <circle cx="384" cy="718" r="6" fill="#3b82f6" opacity="0.8"/>
+  <circle cx="432" cy="708" r="6" fill="#3b82f6" opacity="0.8"/>
+  <circle cx="480" cy="718" r="6" fill="#3b82f6" opacity="0.8"/>
+  <circle cx="528" cy="708" r="6" fill="#3b82f6" opacity="0.8"/>
+  <circle cx="576" cy="718" r="6" fill="#3b82f6" opacity="0.8"/>
+  <circle cx="624" cy="708" r="6" fill="#3b82f6" opacity="0.8"/>
+  <circle cx="672" cy="718" r="6" fill="#3b82f6" opacity="0.8"/>
+  <circle cx="512" cy="546" r="32" fill="#fef3c7"/>
+  <circle cx="512" cy="546" r="20" fill="#f59e0b"/>
+  <circle cx="512" cy="546" r="8" fill="#fff" opacity="0.75"/>
+  <text x="512" y="876" font-family="Helvetica Neue, Arial, sans-serif" font-weight="700" font-size="110" fill="#1d4ed8" text-anchor="middle" letter-spacing="-2">Stitch</text>
+  <text x="512" y="930" font-family="Helvetica Neue, Arial, sans-serif" font-weight="400" font-size="34" fill="#3b82f6" text-anchor="middle" letter-spacing="8">SEWING STUDIO</text>
+</svg>

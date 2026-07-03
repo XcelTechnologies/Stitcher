@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+
+# PyInstaller build output
+build/
+dist/
+*.spec
+
+# macOS
+.DS_Store
+
+# Tests
+.pytest_cache/
+
+# Editors
+.vscode/
+.idea/
