@@ -48,9 +48,10 @@ as you like.
   text to re-type its string (clearing it removes the text). Text can also be
   rotated with the transform tools below.
 - **Transform** (the **Object** menu) — **Rotate 90°** CW/CCW (`Ctrl+R` /
-  `Ctrl+Shift+R`), **Flip Horizontal/Vertical**, and **Scale…** (by percentage).
-  With an object selected the transform pivots about that object; with nothing
-  selected the whole design transforms about its centre.
+  `Ctrl+Shift+R`), **Rotate by angle…** (any angle, clockwise), **Flip
+  Horizontal/Vertical**, and **Scale…** (by percentage). With an object selected
+  the transform pivots about that object; with nothing selected the whole design
+  transforms about its centre.
 - **Make appliqué** (*Object → Make appliqué*) — with a filled region selected,
   adds a **placement** outline and a **tackdown** outline that each **stop** the
   machine, so the sew order becomes *placement → STOP (lay fabric) → tackdown →

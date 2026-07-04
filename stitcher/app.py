@@ -394,6 +394,8 @@ class MainWindow(QMainWindow):
         self.act_rotate_cw.triggered.connect(lambda: self.canvas.rotate_objects(90))
         self.act_rotate_ccw = QAction("Rotate 90° CC&W", self, shortcut="Ctrl+Shift+R")
         self.act_rotate_ccw.triggered.connect(lambda: self.canvas.rotate_objects(-90))
+        self.act_rotate = QAction("Rotate by &angle…", self)
+        self.act_rotate.triggered.connect(self._rotate_objects)
         self.act_flip_h = QAction("Flip &Horizontal", self)
         self.act_flip_h.triggered.connect(lambda: self.canvas.flip_objects(True))
         self.act_flip_v = QAction("Flip &Vertical", self)
@@ -437,6 +439,7 @@ class MainWindow(QMainWindow):
         obj_menu = bar.addMenu("&Object")
         obj_menu.addAction(self.act_rotate_cw)
         obj_menu.addAction(self.act_rotate_ccw)
+        obj_menu.addAction(self.act_rotate)
         obj_menu.addAction(self.act_flip_h)
         obj_menu.addAction(self.act_flip_v)
         obj_menu.addAction(self.act_scale)
@@ -1064,6 +1067,13 @@ class MainWindow(QMainWindow):
         WorksheetDialog(self, color_blocks(pattern), pattern_stats(pattern)).exec()
 
     # ---- transforms & appliqué ----------------------------------------------
+    def _rotate_objects(self) -> None:
+        angle, ok = QInputDialog.getDouble(
+            self, "Rotate", "Angle (° clockwise):", 0.0, -360.0, 360.0, 1
+        )
+        if ok and abs(angle) > 1e-6:
+            self.canvas.rotate_objects(angle)
+
     def _scale_objects(self) -> None:
         percent, ok = QInputDialog.getDouble(
             self, "Scale", "Scale (%):", 100.0, 5.0, 1000.0, 1

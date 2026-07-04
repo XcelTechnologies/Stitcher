@@ -216,6 +216,21 @@ def test_rotate_whole_design_marks_dirty(window):
     assert window._dirty is True
 
 
+def test_rotate_by_arbitrary_angle(window):
+    c = window.canvas
+    text = TextItem(text="Hi", x_mm=5, y_mm=5, height_mm=10)
+    c.design.texts.append(text)
+    c._set_selected(text)
+    import stitcher.app as A
+    orig = A.QInputDialog.getDouble
+    A.QInputDialog.getDouble = staticmethod(lambda *a, **k: (30.0, True))
+    try:
+        window._rotate_objects()
+    finally:
+        A.QInputDialog.getDouble = orig
+    assert text.rotation_deg == 30.0        # not just 90° steps
+
+
 def test_transform_selected_object_only(window):
     c = window.canvas
     keep = Stroke(points=[(0, 0), (5, 0)])
