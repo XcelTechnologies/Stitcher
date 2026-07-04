@@ -55,6 +55,7 @@ class DrawingCanvas(QWidget):
     text_requested = Signal(float, float)   # (x_mm, y_mm) where the user clicked
     selection_changed = Signal(object)      # the selected object, or None
     text_edit_requested = Signal(object)    # a TextItem to re-edit (double-clicked)
+    context_menu_requested = Signal(object)  # global QPoint of a right-click
 
     def __init__(self, design: Design, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -76,6 +77,14 @@ class DrawingCanvas(QWidget):
         self.selected: Optional[Selectable] = None
         self._drag_last: Optional[Point] = None
         self._moved = False
+        self._clipboard: Optional[dict] = None  # (type, dict) of a copied object
+
+        # view: zoom factor and pan offset (px) on top of the fit-to-hoop scale
+        self._zoom = 1.0
+        self._pan = [0.0, 0.0]
+        self._panning = False
+        self._pan_last: Optional[Point] = None
+        self._space_down = False
 
         self.setMinimumSize(360, 360)
         self.setMouseTracking(False)
@@ -84,14 +93,16 @@ class DrawingCanvas(QWidget):
 
     # ---- coordinate mapping -------------------------------------------------
     def _fit(self):
+        """The mm→px transform: fit-to-hoop scaled by zoom and shifted by pan."""
         margin = 16
         w = self.width() - 2 * margin
         h = self.height() - 2 * margin
-        scale = min(w / self.design.hoop_width_mm, h / self.design.hoop_height_mm)
+        base = min(w / self.design.hoop_width_mm, h / self.design.hoop_height_mm)
+        scale = base * self._zoom
         draw_w = self.design.hoop_width_mm * scale
         draw_h = self.design.hoop_height_mm * scale
-        ox = (self.width() - draw_w) / 2
-        oy = (self.height() - draw_h) / 2
+        ox = (self.width() - draw_w) / 2 + self._pan[0]
+        oy = (self.height() - draw_h) / 2 + self._pan[1]
         return scale, ox, oy
 
     def _mm_to_px(self, x_mm: float, y_mm: float) -> QPointF:
@@ -112,6 +123,7 @@ class DrawingCanvas(QWidget):
         self.design = design
         self._active = None
         self._drag_last = None
+        self._panning = False
         self._set_selected(None)
         self.update()
 
@@ -255,8 +267,88 @@ class DrawingCanvas(QWidget):
     def scale_objects(self, factor: float) -> bool:
         return self._apply_transform(lambda obj, cx, cy: obj.scale(factor, cx, cy))
 
+    # ---- selection edits (keyboard / menu driven) ---------------------------
+    def _clone(self, obj: Selectable) -> Selectable:
+        return type(obj).from_dict(obj.to_dict())
+
+    def _list_for(self, obj: Selectable) -> list:
+        if isinstance(obj, Stroke):
+            return self.design.strokes
+        if isinstance(obj, Region):
+            return self.design.regions
+        return self.design.texts
+
+    def nudge_selected(self, dx_mm: float, dy_mm: float) -> None:
+        if self.selected is None:
+            return
+        self.selected.translate(dx_mm, dy_mm)
+        self.update()
+        self.design_changed.emit()
+
+    def duplicate_selected(self) -> None:
+        if self.selected is None:
+            return
+        clone = self._clone(self.selected)
+        clone.translate(5.0, 5.0)          # nudge so the copy is visible
+        self._list_for(clone).append(clone)
+        self._set_selected(clone)
+        self.update()
+        self.design_changed.emit()
+
+    def copy_selected(self) -> None:
+        if self.selected is not None:
+            self._clipboard = self.selected.to_dict()
+            self._clipboard_type = type(self.selected)
+
+    def paste_clipboard(self) -> None:
+        if not self._clipboard:
+            return
+        obj = self._clipboard_type.from_dict(self._clipboard)
+        obj.translate(5.0, 5.0)
+        self._list_for(obj).append(obj)
+        self._set_selected(obj)
+        self.update()
+        self.design_changed.emit()
+
+    def cancel_or_deselect(self) -> None:
+        """Escape: abandon an in-progress draw, else clear the selection."""
+        if self._active is not None:
+            self._remove_active()
+            self._active = None
+            self._drag_last = None
+            self.update()
+        elif self.selected is not None:
+            self._set_selected(None)
+            self.update()
+
+    # ---- view (zoom / pan) --------------------------------------------------
+    def reset_view(self) -> None:
+        self._zoom = 1.0
+        self._pan = [0.0, 0.0]
+        self.update()
+
+    def wheelEvent(self, event) -> None:
+        pos = event.position()
+        scale, ox, oy = self._fit()
+        wx, wy = (pos.x() - ox) / scale, (pos.y() - oy) / scale   # world mm at cursor
+        factor = 1.0015 ** event.angleDelta().y()
+        self._zoom = max(0.2, min(20.0, self._zoom * factor))
+        scale, ox, oy = self._fit()
+        # shift the pan so the mm point under the cursor stays put
+        self._pan[0] += pos.x() - (ox + wx * scale)
+        self._pan[1] += pos.y() - (oy + wy * scale)
+        self.update()
+
     # ---- mouse --------------------------------------------------------------
     def mousePressEvent(self, event) -> None:
+        # middle-button, or Space+left, pans the view
+        if event.button() == Qt.MiddleButton or (
+            event.button() == Qt.LeftButton and self._space_down
+        ):
+            self._panning = True
+            self._pan_last = (event.position().x(), event.position().y())
+            self.setCursor(Qt.ClosedHandCursor)
+            return
         if event.button() != Qt.LeftButton:
             return
         x_mm, y_mm = self._px_to_mm(event.position().x(), event.position().y())
@@ -264,7 +356,14 @@ class DrawingCanvas(QWidget):
         # Select tool, or Shift+click in any tool, picks the object under the cursor.
         if self.tool == TOOL_SELECT or (event.modifiers() & Qt.ShiftModifier):
             self.setFocus()
-            self._set_selected(self._hit_test(x_mm, y_mm))
+            hit = self._hit_test(x_mm, y_mm)
+            # Alt-dragging an object leaves a copy behind and moves the duplicate
+            if hit is not None and (event.modifiers() & Qt.AltModifier):
+                clone = self._clone(hit)
+                self._list_for(clone).append(clone)
+                hit = clone
+                self.design_changed.emit()
+            self._set_selected(hit)
             self._drag_last = (x_mm, y_mm) if self.selected is not None else None
             self._moved = False
             self.update()
@@ -311,6 +410,14 @@ class DrawingCanvas(QWidget):
             self.text_requested.emit(x_mm, y_mm)
 
     def mouseMoveEvent(self, event) -> None:
+        # panning the view
+        if self._panning and self._pan_last is not None:
+            self._pan[0] += event.position().x() - self._pan_last[0]
+            self._pan[1] += event.position().y() - self._pan_last[1]
+            self._pan_last = (event.position().x(), event.position().y())
+            self.update()
+            return
+
         x_mm, y_mm = self._px_to_mm(event.position().x(), event.position().y())
 
         # dragging a selection (Select tool, or after a Shift+click)
@@ -329,6 +436,13 @@ class DrawingCanvas(QWidget):
             self.update()
 
     def mouseReleaseEvent(self, event) -> None:
+        # finishing a pan
+        if self._panning:
+            self._panning = False
+            self._pan_last = None
+            self.setCursor(Qt.OpenHandCursor if self._space_down else self._tool_cursor())
+            return
+
         # finishing a selection drag
         if self._drag_last is not None:
             if self._moved:
@@ -346,11 +460,36 @@ class DrawingCanvas(QWidget):
         self.update()
         self.design_changed.emit()
 
+    def _tool_cursor(self):
+        return Qt.ArrowCursor if self.tool == TOOL_SELECT else Qt.CrossCursor
+
     def keyPressEvent(self, event) -> None:
         if self.selected is not None and event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
             self._delete_selected()
             return
+        if event.key() == Qt.Key_Space and not event.isAutoRepeat():
+            self._space_down = True
+            if not self._panning:
+                self.setCursor(Qt.OpenHandCursor)
+            return
         super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event) -> None:
+        if event.key() == Qt.Key_Space and not event.isAutoRepeat():
+            self._space_down = False
+            if not self._panning:
+                self.setCursor(self._tool_cursor())
+            return
+        super().keyReleaseEvent(event)
+
+    def contextMenuEvent(self, event) -> None:
+        # right-click selects what's under the cursor, then asks the window to
+        # show a menu of actions for it (built in app.py from the shared QActions)
+        x_mm, y_mm = self._px_to_mm(event.pos().x(), event.pos().y())
+        self.setFocus()
+        self._set_selected(self._hit_test(x_mm, y_mm))
+        self.update()
+        self.context_menu_requested.emit(event.globalPos())
 
     def _remove_active(self) -> None:
         if isinstance(self._active, Region) and self._active in self.design.regions:

@@ -205,6 +205,67 @@ def test_edit_metadata_applies_and_marks_dirty(window):
     assert window._dirty is True
 
 
+def test_undo_redo_roundtrip(window):
+    c = window.canvas
+    c.design.strokes.append(Stroke(points=[(10, 10), (30, 10)]))
+    c.design_changed.emit()                       # commit the add
+    assert window.act_undo.isEnabled() and len(c.design.strokes) == 1
+    window._undo()
+    assert len(c.design.strokes) == 0 and window.act_redo.isEnabled()
+    window._redo()
+    assert len(c.design.strokes) == 1
+
+
+def test_undo_covers_a_move(window):
+    c = window.canvas
+    s = Stroke(points=[(0, 0), (10, 0)])
+    c.design.strokes.append(s)
+    c.design_changed.emit()                       # add committed
+    c._set_selected(s)
+    s.translate(5, 5)
+    c.design_changed.emit()                       # move committed
+    window._undo()                                # undo the move
+    assert window.canvas.design.strokes[0].points[0] == (0.0, 0.0)
+
+
+def test_new_project_resets_history(window):
+    c = window.canvas
+    c.design.strokes.append(Stroke(points=[(0, 0), (10, 0)]))
+    c.design_changed.emit()
+    assert window.act_undo.isEnabled()
+    window._maybe_save = lambda: True              # skip the unsaved prompt (instance-only)
+    window._new_project()
+    assert not window.act_undo.isEnabled()         # fresh history
+
+
+def test_tool_hotkey_switches_tool(window):
+    window._set_tool_key(TOOL_TEXT)
+    assert window.canvas.tool == TOOL_TEXT
+    window._set_tool_key(TOOL_SELECT)
+    assert window.canvas.tool == TOOL_SELECT
+
+
+def test_view_toggles_drive_the_preview(window):
+    window._toggle_jumps(False)
+    window._toggle_points(False)
+    assert window.preview.show_jumps is False
+    assert window.preview.show_points is False
+
+
+def test_context_menu_builds_for_selection(window):
+    region = Region(color="#2a9d3a", contours=[[(0, 0), (20, 0), (20, 20)]])
+    window.canvas.design.regions.append(region)
+    window.canvas._set_selected(region)
+    labels = [a.text() for a in window._build_context_menu().actions() if a.text()]
+    assert "&Duplicate" in labels and "Make &appliqué" in labels
+
+
+def test_context_menu_on_empty_offers_paste(window):
+    window.canvas._set_selected(None)
+    labels = [a.text() for a in window._build_context_menu().actions() if a.text()]
+    assert labels == ["&Paste"]
+
+
 def test_rotate_whole_design_marks_dirty(window):
     c = window.canvas
     c.design.strokes.append(Stroke(points=[(10, 0), (20, 0)]))

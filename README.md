@@ -6,6 +6,8 @@ JEF, VP3, XXX, U01), G-code, or SVG/PNG — built on
 [pyembroidery](https://github.com/EmbroidePy/pyembroidery) and
 [PySide6](https://doc.qt.io/qtforpython/).
 
+Note:  I built this for my wife who was complaining there were no apps that ran on the Mac.  All bets are off, but feel free to submit bug reports or help maintain this.  
+
 ## Run from source
 
 ```bash
@@ -22,7 +24,19 @@ as you like.
 - **Select / move** — click an object to select it (a dashed box appears), drag
   to reposition it, and press `Delete` (or `Backspace`) to remove it. You can
   also **Shift+click** an object with *any* tool active to select it without
-  switching tools.
+  switching tools, and **Alt+drag** an object to duplicate it and move the copy.
+  Nudge the selection with the **arrow keys** (1 mm; `Shift` = 10 mm, `Alt` =
+  0.2 mm), duplicate with `Ctrl+D`, copy/paste with `Ctrl+C` / `Ctrl+V`, and
+  press `Esc` to cancel a draw in progress or deselect. **Right-click** an object
+  for a context menu (duplicate, delete, rotate/flip/scale, appliqué).
+- **Tools & undo** — switch tools from the keyboard: `V` select, `B` stroke,
+  `F` fill, `T` text. Every change is undoable — `Ctrl+Z` / `Ctrl+Shift+Z` undo
+  and redo moves, edits, deletes, transforms and metadata (not just the last
+  object added).
+- **Zoom & pan** — scroll the wheel to zoom the preview canvas about the cursor,
+  **middle-drag** (or hold `Space` and drag) to pan, and `Ctrl+0` to fit the hoop
+  again. The **View** menu toggles the preview's **jumps** (`J`) and **needle
+  points** (`P`). *Help → Keyboard shortcuts…* (`F1`) lists everything.
 - **Edit a selection** — while an object is selected, the toolbar switches to
   that object's settings and editing them changes *that object* live (rather than
   setting defaults for the next one). Shift+click a text box, for example, and the
@@ -107,7 +121,9 @@ as you like.
 
 Keyboard: `Ctrl+N` new, `Ctrl+O` open, `Ctrl+S` save, `Ctrl+Shift+S` save as,
 `Ctrl+I` import, `Ctrl+T` trace image, `Ctrl+E` export, `Ctrl+W` thread
-worksheet, `Ctrl+Z` undo the last object.
+worksheet, `Ctrl+Z` / `Ctrl+Shift+Z` undo / redo, `Ctrl+D` duplicate, `V`/`B`/`F`/`T`
+tools, arrow keys nudge, `Esc` cancel/deselect, wheel zoom, `Ctrl+0` fit, `F1`
+full shortcut list.
 
 ## Running the tests
 

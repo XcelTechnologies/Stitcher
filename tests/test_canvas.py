@@ -71,3 +71,52 @@ def test_object_bounds(canvas):
     assert b == (60.0, 60.0, 90.0, 90.0)
     tb = canvas._object_bounds(canvas.design.texts[0])
     assert tb[0] == 20.0 and tb[1] == 40.0 and tb[2] > 20.0 and tb[3] > 40.0
+
+
+# ---- selection edits: duplicate / nudge / copy-paste / cancel ---------------
+def test_duplicate_selected_clones_and_selects(canvas):
+    canvas._set_selected(canvas.design.strokes[0])
+    n = len(canvas.design.strokes)
+    canvas.duplicate_selected()
+    assert len(canvas.design.strokes) == n + 1
+    assert canvas.selected is canvas.design.strokes[-1]     # the copy is selected
+    assert canvas.selected is not canvas.design.strokes[0]  # a distinct object
+
+
+def test_nudge_moves_only_the_selection(canvas):
+    stroke = canvas.design.strokes[0]
+    canvas._set_selected(stroke)
+    before = list(stroke.points)
+    canvas.nudge_selected(2, -3)
+    assert stroke.points == [(x + 2, y - 3) for x, y in before]
+
+
+def test_copy_paste_adds_offset_copy(canvas):
+    canvas._set_selected(canvas.design.texts[0])
+    canvas.copy_selected()
+    n = len(canvas.design.texts)
+    canvas.paste_clipboard()
+    assert len(canvas.design.texts) == n + 1
+    assert canvas.design.texts[-1].text == canvas.design.texts[0].text
+
+
+def test_cancel_deselects(canvas):
+    canvas._set_selected(canvas.design.strokes[0])
+    canvas.cancel_or_deselect()
+    assert canvas.selected is None
+
+
+def test_wheel_zoom_and_reset(canvas):
+    from PySide6.QtCore import QPoint, QPointF
+
+    class _Wheel:
+        def position(self):
+            return QPointF(200, 200)
+        def angleDelta(self):
+            return QPoint(0, 120)
+
+    z0 = canvas._zoom
+    canvas.wheelEvent(_Wheel())
+    assert canvas._zoom > z0
+    canvas.reset_view()
+    assert canvas._zoom == 1.0 and canvas._pan == [0.0, 0.0]

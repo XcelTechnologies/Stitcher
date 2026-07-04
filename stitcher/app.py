@@ -17,6 +17,7 @@ from PySide6.QtGui import (
     QImageReader,
     QKeySequence,
     QPixmap,
+    QShortcut,
 )
 
 # App icon assets live in stitcher/assets/ (bundled into frozen builds).
@@ -46,6 +47,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QSpinBox,
@@ -91,6 +93,27 @@ from . import threads
 PROJECT_EXT = ".stitch"
 PROJECT_FILTER = "Stitcher project (*.stitch);;All files (*)"
 OPEN_FILTER = "Stitcher project (*.stitch *.json);;All files (*)"
+
+# How many undo snapshots to keep (each is a small JSON copy of the design).
+HISTORY_LIMIT = 80
+
+_SHORTCUTS_HTML = """
+<h3>Keyboard &amp; mouse</h3>
+<table cellspacing='0' cellpadding='3'>
+<tr><td><b>Tools</b></td><td>V select · B stroke · F fill · T text</td></tr>
+<tr><td><b>Shift+click</b></td><td>select an object with any tool active</td></tr>
+<tr><td><b>Alt+drag</b></td><td>duplicate an object and move the copy</td></tr>
+<tr><td><b>Esc</b></td><td>cancel the current draw, or deselect</td></tr>
+<tr><td><b>Arrows</b></td><td>nudge 1&nbsp;mm · Shift 10&nbsp;mm · Alt 0.2&nbsp;mm</td></tr>
+<tr><td><b>Delete / Backspace</b></td><td>delete the selection</td></tr>
+<tr><td><b>Ctrl+D</b></td><td>duplicate · Ctrl+C / Ctrl+V copy &amp; paste</td></tr>
+<tr><td><b>Ctrl+Z / Ctrl+Shift+Z</b></td><td>undo / redo</td></tr>
+<tr><td><b>Ctrl+R / Ctrl+Shift+R</b></td><td>rotate 90° CW / CCW</td></tr>
+<tr><td><b>Wheel</b></td><td>zoom · middle-drag or Space-drag pan · Ctrl+0 fit</td></tr>
+<tr><td><b>J / P</b></td><td>toggle preview jumps / needle points</td></tr>
+<tr><td><b>Right-click</b></td><td>context menu for the object under the cursor</td></tr>
+</table>
+"""
 
 
 def _color_icon(hex_color: str) -> QIcon:
@@ -348,6 +371,13 @@ class MainWindow(QMainWindow):
         self.canvas.text_requested.connect(self._on_text_requested)
         self.canvas.text_edit_requested.connect(self._on_text_edit_requested)
         self.canvas.selection_changed.connect(self._on_selection_changed)
+        self.canvas.context_menu_requested.connect(self._show_context_menu)
+
+        self._build_shortcuts()
+        self._undo_stack: list[str] = []
+        self._redo_stack: list[str] = []
+        self._baseline: Optional[str] = None
+        self._reset_history()
         self._update_title()
         self._refresh()
 
@@ -383,11 +413,37 @@ class MainWindow(QMainWindow):
         self.act_quit = QAction("&Quit", self, shortcut=QKeySequence.Quit)
         self.act_quit.triggered.connect(self.close)
 
-        self.act_undo = QAction("&Undo stroke", self, shortcut=QKeySequence.Undo)
-        self.act_undo.triggered.connect(self.canvas.undo_last_stroke)
+        self.act_undo = QAction("&Undo", self, shortcut=QKeySequence.Undo)
+        self.act_undo.triggered.connect(self._undo)
+        self.act_redo = QAction("&Redo", self, shortcut=QKeySequence.Redo)
+        self.act_redo.triggered.connect(self._redo)
+
+        self.act_duplicate = QAction("&Duplicate", self, shortcut="Ctrl+D")
+        self.act_duplicate.triggered.connect(self.canvas.duplicate_selected)
+        self.act_copy = QAction("&Copy", self, shortcut=QKeySequence.Copy)
+        self.act_copy.triggered.connect(self.canvas.copy_selected)
+        self.act_paste = QAction("&Paste", self, shortcut=QKeySequence.Paste)
+        self.act_paste.triggered.connect(self.canvas.paste_clipboard)
+        self.act_delete = QAction("De&lete", self)   # Delete key handled by the canvas
+        self.act_delete.triggered.connect(self.canvas.delete_selected)
 
         self.act_clear = QAction("&Clear", self)
         self.act_clear.triggered.connect(self._confirm_clear)
+
+        # view
+        self.act_show_jumps = QAction("Show &jumps", self, checkable=True, shortcut="J")
+        self.act_show_jumps.setChecked(True)
+        self.act_show_jumps.toggled.connect(self._toggle_jumps)
+        self.act_show_points = QAction(
+            "Show &needle points", self, checkable=True, shortcut="P"
+        )
+        self.act_show_points.setChecked(True)
+        self.act_show_points.toggled.connect(self._toggle_points)
+        self.act_fit = QAction("&Fit to hoop", self, shortcut="Ctrl+0")
+        self.act_fit.triggered.connect(self.canvas.reset_view)
+
+        self.act_shortcuts = QAction("&Keyboard shortcuts…", self, shortcut="F1")
+        self.act_shortcuts.triggered.connect(self._show_shortcuts)
 
         # transforms — act on the selection, or the whole design if nothing is picked
         self.act_rotate_cw = QAction("Rotate 90° &CW", self, shortcut="Ctrl+R")
@@ -434,6 +490,13 @@ class MainWindow(QMainWindow):
 
         edit_menu = bar.addMenu("&Edit")
         edit_menu.addAction(self.act_undo)
+        edit_menu.addAction(self.act_redo)
+        edit_menu.addSeparator()
+        edit_menu.addAction(self.act_duplicate)
+        edit_menu.addAction(self.act_copy)
+        edit_menu.addAction(self.act_paste)
+        edit_menu.addAction(self.act_delete)
+        edit_menu.addSeparator()
         edit_menu.addAction(self.act_clear)
 
         obj_menu = bar.addMenu("&Object")
@@ -446,7 +509,14 @@ class MainWindow(QMainWindow):
         obj_menu.addSeparator()
         obj_menu.addAction(self.act_applique)
 
+        view_menu = bar.addMenu("&View")
+        view_menu.addAction(self.act_show_jumps)
+        view_menu.addAction(self.act_show_points)
+        view_menu.addSeparator()
+        view_menu.addAction(self.act_fit)
+
         help_menu = bar.addMenu("&Help")
+        help_menu.addAction(self.act_shortcuts)
         help_menu.addAction(self.act_about)
 
     def _build_toolbar(self) -> None:
@@ -581,6 +651,7 @@ class MainWindow(QMainWindow):
 
         tb.addSeparator()
         tb.addAction(self.act_undo)
+        tb.addAction(self.act_redo)
         tb.addAction(self.act_clear)
 
         # sync initial selections to the canvas
@@ -609,8 +680,111 @@ class MainWindow(QMainWindow):
         self.trim_spin.setValue(design.trim_jump_mm)
         self.trim_spin.blockSignals(False)
 
+    # ---- keyboard shortcuts (tool keys, nudge, escape) ----------------------
+    def _build_shortcuts(self) -> None:
+        def sc(seq: str, fn) -> None:
+            QShortcut(QKeySequence(seq), self, activated=fn)
+
+        sc("V", lambda: self._set_tool_key(TOOL_SELECT))
+        sc("B", lambda: self._set_tool_key(TOOL_STROKE))
+        sc("F", lambda: self._set_tool_key(TOOL_REGION))
+        sc("T", lambda: self._set_tool_key(TOOL_TEXT))
+        sc("Escape", self.canvas.cancel_or_deselect)
+        # arrow-key nudge: 1 mm, Shift = 10 mm (coarse), Alt = 0.2 mm (fine)
+        for key, dx, dy in (("Left", -1, 0), ("Right", 1, 0), ("Up", 0, -1), ("Down", 0, 1)):
+            sc(key, lambda dx=dx, dy=dy: self.canvas.nudge_selected(dx, dy))
+            sc(f"Shift+{key}", lambda dx=dx, dy=dy: self.canvas.nudge_selected(dx * 10, dy * 10))
+            sc(f"Alt+{key}", lambda dx=dx, dy=dy: self.canvas.nudge_selected(dx * 0.2, dy * 0.2))
+
+    def _set_tool_key(self, tool: str) -> None:
+        idx = self.tool_combo.findData(tool)
+        if idx >= 0:
+            self.tool_combo.setCurrentIndex(idx)
+
+    # ---- undo / redo (design snapshots) -------------------------------------
+    def _snapshot(self) -> str:
+        return json.dumps(self.design.to_dict())
+
+    def _reset_history(self) -> None:
+        self._undo_stack.clear()
+        self._redo_stack.clear()
+        self._baseline = self._snapshot()
+        self._update_history_actions()
+
+    def _record_history(self) -> None:
+        """Push the pre-change state so it can be undone; called after a mutation."""
+        if self._baseline is None:
+            self._baseline = self._snapshot()
+        self._undo_stack.append(self._baseline)
+        del self._undo_stack[:-HISTORY_LIMIT]     # cap memory
+        self._redo_stack.clear()
+        self._baseline = self._snapshot()
+        self._update_history_actions()
+
+    def _undo(self) -> None:
+        if not self._undo_stack:
+            return
+        self._redo_stack.append(self._snapshot())
+        self._restore_state(self._undo_stack.pop())
+
+    def _redo(self) -> None:
+        if not self._redo_stack:
+            return
+        self._undo_stack.append(self._snapshot())
+        self._restore_state(self._redo_stack.pop())
+
+    def _restore_state(self, snapshot: str) -> None:
+        self._set_design(Design.from_dict(json.loads(snapshot)))
+        self._baseline = snapshot
+        self._set_dirty(True)
+        self._refresh()
+        self._update_history_actions()
+
+    def _update_history_actions(self) -> None:
+        self.act_undo.setEnabled(bool(self._undo_stack))
+        self.act_redo.setEnabled(bool(self._redo_stack))
+
+    # ---- view toggles / context menu / shortcuts help -----------------------
+    def _toggle_jumps(self, on: bool) -> None:
+        self.preview.show_jumps = on
+        self.preview.update()
+
+    def _toggle_points(self, on: bool) -> None:
+        self.preview.show_points = on
+        self.preview.update()
+
+    def _build_context_menu(self) -> QMenu:
+        """The right-click menu for the current selection (or empty canvas)."""
+        menu = QMenu(self)
+        sel = self.canvas.selected
+        if sel is not None:
+            menu.addAction(self.act_duplicate)
+            menu.addAction(self.act_copy)
+            menu.addAction(self.act_delete)
+            menu.addSeparator()
+            menu.addAction(self.act_rotate_cw)
+            menu.addAction(self.act_rotate_ccw)
+            menu.addAction(self.act_rotate)
+            menu.addAction(self.act_flip_h)
+            menu.addAction(self.act_flip_v)
+            menu.addAction(self.act_scale)
+            if isinstance(sel, Region):
+                menu.addSeparator()
+                menu.addAction(self.act_applique)
+        else:
+            self.act_paste.setEnabled(self.canvas._clipboard is not None)
+            menu.addAction(self.act_paste)
+        return menu
+
+    def _show_context_menu(self, global_pos) -> None:
+        self._build_context_menu().exec(global_pos)
+
+    def _show_shortcuts(self) -> None:
+        QMessageBox.information(self, "Keyboard shortcuts", _SHORTCUTS_HTML)
+
     # ---- slots --------------------------------------------------------------
     def _on_design_changed(self) -> None:
+        self._record_history()
         self._set_dirty(True)
         self._refresh()
 
@@ -618,6 +792,7 @@ class MainWindow(QMainWindow):
     def _after_edit(self) -> None:
         """Repaint, mark dirty, and rebuild the preview after editing a selection."""
         self.canvas.update()
+        self._record_history()
         self._set_dirty(True)
         self._refresh()
 
@@ -873,6 +1048,8 @@ class MainWindow(QMainWindow):
         if not self._maybe_save():
             return
         self._set_design(Design())
+        self.canvas.reset_view()
+        self._reset_history()
         self.project_path = None
         self._set_dirty(False)
         self._update_title()
@@ -892,6 +1069,8 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Open failed", f"Could not read project:\n{exc}")
             return
         self._set_design(design)
+        self.canvas.reset_view()
+        self._reset_history()
         self.project_path = filename
         self._set_dirty(False)
         self._update_title()
@@ -959,6 +1138,8 @@ class MainWindow(QMainWindow):
             )
             return
         self._set_design(design)
+        self.canvas.reset_view()
+        self._reset_history()
         self.project_path = None  # imported art isn't a .stitch project yet
         self._set_dirty(True)
         self._update_title()
@@ -1004,9 +1185,8 @@ class MainWindow(QMainWindow):
             )
             return
         self.design.regions.extend(regions)
-        self._set_dirty(True)
         self.canvas.update()
-        self._refresh()
+        self.canvas.design_changed.emit()   # dirty + preview + undo snapshot
         self.statusBar().showMessage(
             f"Traced {len(regions)} colour region(s) from "
             f"{os.path.basename(filename)} — edit or delete them with the Select tool",
@@ -1103,9 +1283,8 @@ class MainWindow(QMainWindow):
         ]
         # strokes always sew before regions, so these precede the cover fill
         self.design.strokes.extend(passes)
-        self._set_dirty(True)
         self.canvas.update()
-        self._refresh()
+        self.canvas.design_changed.emit()   # dirty + preview + undo snapshot
         self.statusBar().showMessage(
             "Added appliqué placement + tackdown outlines — sew order: "
             "placement → STOP → tackdown → STOP → cover.", 8000
@@ -1119,6 +1298,7 @@ class MainWindow(QMainWindow):
         new_meta = dialog.values()
         if new_meta != self.design.metadata:
             self.design.metadata = new_meta
+            self._record_history()
             self._set_dirty(True)
 
 
