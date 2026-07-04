@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: MIT
 """Tests for the pure data model (no Qt needed)."""
 
+import pytest
+
 from stitcher.model import (
     Design,
     Region,
@@ -33,9 +35,23 @@ def test_stroke_translate():
 
 def test_stroke_roundtrip_preserves_all_fields():
     s = Stroke(color="#abcdef", stitch_length_mm=2.5, points=[(1, 2), (3, 4)],
-               stitch_type=STITCH_SATIN, width_mm=3.5, underlay=False)
+               stitch_type=STITCH_SATIN, width_mm=3.5, underlay=False,
+               pause_after=True)
     back = Stroke.from_dict(s.to_dict())
     assert back == s
+
+
+def test_pause_after_defaults_off_and_roundtrips():
+    # default is off for every object kind, and survives a save/load
+    assert Stroke().pause_after is False
+    assert Region().pause_after is False
+    assert TextItem().pause_after is False
+    r = Region(contours=[[(0, 0), (5, 0), (5, 5)]], pause_after=True)
+    assert Region.from_dict(r.to_dict()).pause_after is True
+    t = TextItem(text="Hi", pause_after=True)
+    assert TextItem.from_dict(t.to_dict()).pause_after is True
+    # old files without the key load with it off
+    assert Stroke.from_dict({"points": [[0, 0], [1, 1]]}).pause_after is False
 
 
 # ---- Region (multi-contour) ----------------------------------------------
@@ -128,3 +144,45 @@ def test_design_trim_jump_roundtrips_and_defaults():
     assert Design.from_dict(d.to_dict()).trim_jump_mm == 3.5
     # old files without the key fall back to the default (1 mm)
     assert Design.from_dict({}).trim_jump_mm == 1.0
+
+
+def test_stroke_rotate_scale_flip():
+    s = Stroke(points=[(10, 0), (0, 0)])
+    s.rotate(90, 0, 0)
+    assert s.points[0][0] == pytest.approx(0.0) and s.points[0][1] == pytest.approx(10.0)
+    s2 = Stroke(points=[(0, 0), (10, 10)])
+    s2.scale(2.0, 0, 0)
+    assert s2.points[1] == (20.0, 20.0)
+    s3 = Stroke(points=[(2, 3)])
+    s3.flip_h(0)
+    s3.flip_v(0)
+    assert s3.points[0] == (-2, -3)
+
+
+def test_region_transforms_all_contours():
+    r = Region(contours=[[(0, 0), (10, 0), (10, 10)], [(2, 2), (4, 2), (4, 4)]])
+    r.scale(2.0, 0, 0)
+    assert r.contours[0][1] == (20.0, 0.0)
+    assert r.contours[1][1] == (8.0, 4.0)
+
+
+def test_text_rotation_field_and_transform_roundtrip():
+    t = TextItem(text="Hi", x_mm=0, y_mm=0, height_mm=10)
+    assert t.rotation_deg == 0.0
+    t.rotate(90, 0, 0, box_w=20, box_h=10)
+    assert t.rotation_deg == 90.0
+    assert TextItem.from_dict(t.to_dict()).rotation_deg == 90.0
+    # a horizontal flip negates the spin
+    t.flip_h(0, box_w=20)
+    assert t.rotation_deg == pytest.approx(270.0)
+
+
+def test_design_metadata_roundtrips_and_drops_blanks():
+    d = Design()
+    assert d.metadata == {}                      # empty by default
+    d.metadata = {"name": "Logo", "author": "Paul", "comments": ""}
+    back = Design.from_dict(d.to_dict())
+    # non-empty fields survive; blank ones are dropped
+    assert back.metadata == {"name": "Logo", "author": "Paul"}
+    # old files without the key load with empty metadata
+    assert Design.from_dict({}).metadata == {}

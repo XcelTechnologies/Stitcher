@@ -25,8 +25,10 @@ from .model import (
     TextItem,
     DEFAULT_HOOP_MM,
     DEFAULT_TRIM_JUMP_MM,
+    METADATA_FIELDS,
     STITCH_BEAN,
     STITCH_SATIN,
+    STITCH_SEQUIN,
 )
 from .text import text_to_contours
 
@@ -61,9 +63,14 @@ SUPPORTED_WRITE_FORMATS: List[Tuple[str, str]] = [
     ("vp3", "Pfaff (*.vp3)"),
     ("xxx", "Singer (*.xxx)"),
     ("u01", "Barudan (*.u01)"),
+    ("gcode", "G-code (*.gcode)"),
     ("svg", "SVG vector (*.svg)"),
     ("png", "PNG image (*.png)"),
 ]
+
+# Non-stitch outputs: the stitch-machine encoder options (see ExportOptionsDialog)
+# don't apply to these, so the export dialog skips them.
+NON_MACHINE_WRITE_FORMATS = {"gcode", "svg", "png"}
 
 # Formats pyembroidery can read back in for import.
 SUPPORTED_READ_FORMATS: List[Tuple[str, str]] = [
@@ -164,7 +171,15 @@ def _satin_run(stroke: Stroke) -> List[Point]:
     return out
 
 
+def _sequin_run(stroke: Stroke) -> List[Point]:
+    """Points, one per sequin, spaced ``stitch_length_mm`` along the path."""
+    return _resample_polyline(stroke.points, stroke.stitch_length_mm)
+
+
 def _stroke_runs(stroke: Stroke) -> List[List[UnitPoint]]:
+    if stroke.stitch_type == STITCH_SEQUIN:
+        run = _to_units(_sequin_run(stroke))
+        return [run] if run else []
     if stroke.stitch_type == STITCH_SATIN:
         runs: List[List[UnitPoint]] = []
         if stroke.underlay:
@@ -316,7 +331,8 @@ def _region_runs(region: Region) -> List[List[UnitPoint]]:
 
 def _text_runs(item: TextItem) -> List[List[UnitPoint]]:
     contours = text_to_contours(
-        item.text, item.font_family, item.height_mm, item.x_mm, item.y_mm
+        item.text, item.font_family, item.height_mm, item.x_mm, item.y_mm,
+        item.rotation_deg,
     )
     return _filled_object_runs(
         contours, item.angle_deg, item.spacing_mm, item.stitch_length_mm, item.underlay
@@ -354,25 +370,53 @@ def _add_thread(pattern: pe.EmbPattern, hex_color: str) -> None:
     pattern.add_thread(thread)
 
 
+def _apply_metadata(pattern: pe.EmbPattern, design: Design) -> None:
+    """Embed the design's free-text metadata (name/author/…) into the pattern.
+
+    Formats that carry metadata pick these up on write (PES: all fields; DST:
+    name/author/copyright). Blank fields are skipped so nothing empty is written.
+    """
+    for key, value in design.metadata.items():
+        text = str(value).strip()
+        if text:
+            pattern.metadata(key, text)
+
+
 # ---------------------------------------------------------------------------
 # Assembly
 # ---------------------------------------------------------------------------
-def _design_objects(design: Design) -> List[Tuple[str, List[List[UnitPoint]]]]:
-    """Every drawable object as (colour, runs), in stitch order."""
-    objects: List[Tuple[str, List[List[UnitPoint]]]] = []
+# One drawable object: (colour, runs, pause_after, is_sequin).
+DesignObject = Tuple[str, List[List[UnitPoint]], bool, bool]
+
+
+def _design_objects(design: Design) -> List[DesignObject]:
+    """Every drawable object as (colour, runs, pause_after, is_sequin), in order."""
+    objects: List[DesignObject] = []
     for stroke in design.drawable_strokes():
         runs = _stroke_runs(stroke)
         if runs:
-            objects.append((stroke.color, runs))
+            sequin = stroke.stitch_type == STITCH_SEQUIN
+            objects.append((stroke.color, runs, stroke.pause_after, sequin))
     for region in design.drawable_regions():
         runs = _region_runs(region)
         if runs:
-            objects.append((region.color, runs))
+            objects.append((region.color, runs, region.pause_after, False))
     for item in design.drawable_texts():
         runs = _text_runs(item)
         if runs:
-            objects.append((item.color, runs))
+            objects.append((item.color, runs, item.pause_after, False))
     return objects
+
+
+def _eject_sequins(pattern: pe.EmbPattern, runs: List[List[UnitPoint]]) -> None:
+    """Drop a sequin at every point instead of stitching a run."""
+    for run in runs:
+        if not run:
+            continue
+        pattern.move_abs(run[0][0], run[0][1])   # travel to the first sequin
+        pattern.add_command(pe.SEQUIN_MODE)       # enter sequin dispensing
+        for x, y in run:
+            pattern.add_stitch_absolute(pe.SEQUIN_EJECT, x, y)
 
 
 def _stitch_object(
@@ -424,7 +468,7 @@ def design_to_pattern(design: Design) -> pe.EmbPattern:
     pattern = pe.EmbPattern()
 
     prev_color: str | None = None
-    for color, runs in _design_objects(design):
+    for color, runs, pause_after, is_sequin in _design_objects(design):
         if prev_color is None:
             _add_thread(pattern, color)
         else:
@@ -433,17 +477,45 @@ def design_to_pattern(design: Design) -> pe.EmbPattern:
                 pattern.color_change()
                 _add_thread(pattern, color)
 
-        _stitch_object(pattern, runs, design.trim_jump_mm)
+        if is_sequin:
+            _eject_sequins(pattern, runs)
+        else:
+            _stitch_object(pattern, runs, design.trim_jump_mm)
+        if pause_after:
+            # Halt the machine here — for appliqué (place/trim fabric between
+            # passes) or a manual thread change on a single-needle machine.
+            pattern.stop()
         prev_color = color
 
+    _apply_metadata(pattern, design)
     pattern.end()
     return pattern
 
 
-def export_design(design: Design, filepath: str) -> None:
-    """Encode and write the design; format is chosen from the file extension."""
+def export_settings(max_stitch_mm: float = 0.0) -> dict | None:
+    """Encoder settings for :func:`export_design` / ``pattern.write``.
+
+    ``max_stitch_mm`` > 0 caps stitch length: the encoder splits any longer
+    stitch into a walk of shorter ones (rather than jumping over it), so machines
+    that reject over-long stitches get a clean file. Returns ``None`` when there
+    is nothing to configure.
+    """
+    if max_stitch_mm and max_stitch_mm > 0:
+        return {
+            "max_stitch": max_stitch_mm * UNITS_PER_MM,
+            "long_stitch_contingency": pe.CONTINGENCY_LONG_STITCH_SEW_TO,
+        }
+    return None
+
+
+def export_design(design: Design, filepath: str, settings: dict | None = None) -> None:
+    """Encode and write the design; format is chosen from the file extension.
+
+    ``settings`` is an optional pyembroidery encoder settings dict (see
+    :func:`export_settings`) applied when writing machine formats.
+    """
     pattern = design_to_pattern(design)
-    pattern.write(filepath)
+    pe.write(pattern, filepath, settings)
 
 
 def _thread_hex(pattern: pe.EmbPattern, index: int) -> str:
@@ -452,6 +524,21 @@ def _thread_hex(pattern: pe.EmbPattern, index: int) -> str:
         th = threads[index]
         return "#%02x%02x%02x" % (th.get_red(), th.get_green(), th.get_blue())
     return "#1a1a1a"
+
+
+def _read_metadata(pattern: pe.EmbPattern) -> dict:
+    """Pull known metadata fields out of a read-in pattern (case-insensitive).
+
+    Readers use varying capitalisation (DST ``name`` vs PES ``Name``), so match
+    each of our fields against ``extras`` ignoring case.
+    """
+    lowered = {str(k).lower(): v for k, v in pattern.extras.items()}
+    meta: dict = {}
+    for field_name in METADATA_FIELDS:
+        value = lowered.get(field_name)
+        if isinstance(value, str) and value.strip():
+            meta[field_name] = value.strip()
+    return meta
 
 
 def pattern_to_design(pattern: pe.EmbPattern) -> Design:
@@ -482,6 +569,7 @@ def pattern_to_design(pattern: pe.EmbPattern) -> Design:
             current = None
 
     design.strokes = [s for s in design.strokes if s.is_drawable()]
+    design.metadata = _read_metadata(pattern)
 
     # Shift artwork to positive coordinates and size the hoop to fit.
     pts = [p for s in design.strokes for p in s.points]
@@ -534,6 +622,10 @@ def pattern_to_segments(pattern: pe.EmbPattern) -> List[Segment]:
             if prev is not None and not cut:
                 segments.append((prev[0], prev[1], x, y, "jump", current_color()))
             prev = (x, y)
+        elif code == pe.SEQUIN_EJECT:
+            # a dropped sequin — a marker at this point (zero-length segment)
+            segments.append((x, y, x, y, "sequin", current_color()))
+            prev = (x, y)
         elif code in (pe.COLOR_CHANGE, pe.NEEDLE_SET):
             color_index += 1
             prev = (x, y)
@@ -543,7 +635,7 @@ def pattern_to_segments(pattern: pe.EmbPattern) -> List[Segment]:
             cut = True
         elif code == pe.END:
             break
-        else:  # STOP, etc. — keep the needle position, draw nothing.
+        else:  # STOP, SEQUIN_MODE, etc. — keep the needle position, draw nothing.
             prev = (x, y)
 
     return segments
@@ -557,6 +649,36 @@ def pattern_stats(pattern: pe.EmbPattern) -> dict:
     return {
         "stitches": pattern.count_stitches(),
         "colors": pattern.count_color_changes() + 1,
+        "trims": pattern.count_stitch_commands(pe.TRIM),
+        "jumps": pattern.count_stitch_commands(pe.JUMP),
+        "stops": pattern.count_stitch_commands(pe.STOP),
         "width_mm": width_mm,
         "height_mm": height_mm,
     }
+
+
+def color_blocks(pattern: pe.EmbPattern) -> List[dict]:
+    """One row per colour block, in stitch order, for a thread worksheet.
+
+    Each entry is ``{"index", "hex", "stitches", "stops"}``: the sew sequence
+    number, the block's thread colour, its needle-penetration count and how many
+    machine stops fall inside it. Naming a colour against a real spool is left to
+    the caller (see :mod:`stitcher.threads`).
+    """
+    blocks: List[dict] = []
+    for stitches, thread in pattern.get_as_colorblocks():
+        stitches = list(stitches)
+        n_stitch = sum(1 for _x, _y, c in stitches if (c & pe.COMMAND_MASK) == pe.STITCH)
+        n_stops = sum(1 for _x, _y, c in stitches if (c & pe.COMMAND_MASK) == pe.STOP)
+        if n_stitch == 0:
+            continue  # a trailing block that only carries the END/STOP command
+        if thread is not None:
+            hexc = "#%02x%02x%02x" % (
+                thread.get_red(), thread.get_green(), thread.get_blue()
+            )
+        else:
+            hexc = "#1a1a1a"
+        blocks.append(
+            {"index": len(blocks) + 1, "hex": hexc, "stitches": n_stitch, "stops": n_stops}
+        )
+    return blocks

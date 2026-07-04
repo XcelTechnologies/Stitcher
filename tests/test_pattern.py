@@ -6,12 +6,16 @@ import math
 import pyembroidery as pe
 import pytest
 
-from stitcher.model import Design, Region, Stroke, STITCH_BEAN, STITCH_SATIN
+from stitcher.model import (
+    Design, Region, Stroke, TextItem, STITCH_BEAN, STITCH_SATIN, STITCH_SEQUIN,
+)
 from stitcher import pattern as P
 from stitcher.pattern import (
     UNITS_PER_MM,
+    color_blocks,
     design_to_pattern,
     export_design,
+    export_settings,
     import_design,
     pattern_stats,
     pattern_to_segments,
@@ -153,13 +157,130 @@ def test_trim_jump_cuts_long_travels_between_columns():
     assert long_jumps == []
 
 
-@pytest.mark.parametrize("ext", ["dst", "pes", "exp", "jef", "svg"])
+def test_pause_after_emits_a_stop():
+    d = Design()
+    d.strokes.append(Stroke(points=[(0, 0), (10, 0)], pause_after=False))
+    assert pattern_stats(design_to_pattern(d))["stops"] == 0
+    d.strokes[0].pause_after = True
+    assert pattern_stats(design_to_pattern(d))["stops"] == 1
+
+
+def test_stop_is_not_drawn_in_preview():
+    d = Design()
+    d.strokes.append(Stroke(points=[(0, 0), (10, 0), (10, 10)], pause_after=True))
+    # a STOP draws nothing but must not swallow the stitches around it
+    kinds = {s[4] for s in pattern_to_segments(design_to_pattern(d))}
+    assert "stitch" in kinds
+
+
+def test_pattern_stats_reports_trims_and_stops_keys():
+    stats = pattern_stats(design_to_pattern(Design(
+        strokes=[Stroke(points=[(0, 0), (10, 0)])],
+    )))
+    for key in ("stitches", "colors", "trims", "jumps", "stops", "width_mm", "height_mm"):
+        assert key in stats
+
+
+def test_color_blocks_one_row_per_colour_with_counts():
+    d = Design()
+    d.strokes.append(Stroke(color="#111111", points=[(0, 0), (10, 0)]))
+    d.regions.append(Region(color="#222222", contours=[_square(15)], spacing_mm=2.0))
+    blocks = color_blocks(design_to_pattern(d))
+    assert [b["index"] for b in blocks] == [1, 2]
+    assert blocks[0]["hex"] == "#111111" and blocks[1]["hex"] == "#222222"
+    assert all(b["stitches"] > 0 for b in blocks)
+
+
+def test_export_settings_caps_stitch_length(tmp_path):
+    # a long single run exported with a cap must contain no over-long stitch
+    d = Design()
+    d.strokes.append(Stroke(points=[(0, 0), (100, 0)], stitch_length_mm=40.0))
+    out = tmp_path / "capped.dst"
+    export_design(d, str(out), export_settings(max_stitch_mm=4.0))
+    pattern = import_design(str(out))
+    for s in pattern.strokes:
+        for a, b in zip(s.points, s.points[1:]):
+            assert math.hypot(b[0] - a[0], b[1] - a[1]) <= 4.0 + 0.2
+
+
+def test_export_settings_none_when_disabled():
+    assert export_settings(0.0) is None
+    assert export_settings(5.0) is not None
+
+
+def test_metadata_is_embedded_in_the_pattern():
+    d = Design(metadata={"name": "Logo", "author": "Paul", "comments": ""})
+    d.strokes.append(Stroke(points=[(0, 0), (10, 0)]))
+    pattern = design_to_pattern(d)
+    assert pattern.get_metadata("name") == "Logo"
+    assert pattern.get_metadata("author") == "Paul"
+    assert pattern.get_metadata("comments") is None    # blank field not written
+
+
+def test_metadata_roundtrips_through_a_machine_file(tmp_path):
+    d = Design(metadata={"name": "Roundtrip"})
+    d.strokes.append(Stroke(points=[(0, 0), (20, 0), (20, 20)]))
+    out = tmp_path / "meta.dst"
+    export_design(d, str(out))
+    assert import_design(str(out)).metadata.get("name") == "Roundtrip"
+
+
+@pytest.mark.parametrize("ext", ["dst", "pes", "exp", "jef", "svg", "gcode"])
 def test_export_writes_nonempty_file(tmp_path, ext):
     d = Design()
     d.strokes.append(Stroke(color="#d1495b", points=[(2, 2), (30, 5), (40, 30)]))
     out = tmp_path / f"design.{ext}"
     export_design(d, str(out))
     assert out.exists() and out.stat().st_size > 0
+
+
+def test_gcode_export_is_valid_gcode(tmp_path):
+    d = Design()
+    d.strokes.append(Stroke(color="#111111", points=[(0, 0), (30, 0), (30, 30)]))
+    out = tmp_path / "design.gcode"
+    export_design(d, str(out))
+    text = out.read_text()
+    assert "G00" in text          # positioning moves
+    assert "M30" in text          # program end
+    assert "gcode" in {e for e, _label in P.SUPPORTED_WRITE_FORMATS} \
+        and "gcode" in P.NON_MACHINE_WRITE_FORMATS
+
+
+def test_sequin_stroke_ejects_sequins_and_previews(tmp_path):
+    d = Design()
+    d.strokes.append(Stroke(color="#e0a800", points=[(0, 0), (50, 0)],
+                            stitch_length_mm=5.0, stitch_type=STITCH_SEQUIN))
+    pattern = design_to_pattern(d)
+    n_sequins = pattern.count_stitch_commands(pe.SEQUIN_EJECT)
+    assert n_sequins == 11                       # 0..50 mm every 5 mm
+    # the preview marks each sequin drop
+    seq_segs = [s for s in pattern_to_segments(pattern) if s[4] == "sequin"]
+    assert len(seq_segs) == 11
+    # and it survives export to a machine format
+    out = tmp_path / "seq.dst"
+    export_design(d, str(out))
+    assert pe.read(str(out)).count_stitch_commands(pe.SEQUIN_EJECT) == 11
+
+
+def test_text_rotation_changes_the_stitched_outline():
+    base = Design(); base.texts.append(TextItem(text="A", x_mm=10, y_mm=10, height_mm=20))
+    spun = Design(); spun.texts.append(
+        TextItem(text="A", x_mm=10, y_mm=10, height_mm=20, rotation_deg=90)
+    )
+    a = pattern_to_segments(design_to_pattern(base))
+    b = pattern_to_segments(design_to_pattern(spun))
+    assert a and b and a != b
+
+
+def test_pes_export_embeds_a_preview_thumbnail(tmp_path):
+    # PES carries a thumbnail machines show when browsing files; pyembroidery's
+    # writer renders it from the actual stitches — confirm one is embedded.
+    d = Design()
+    d.strokes.append(Stroke(color="#d1495b", points=[(0, 0), (30, 0), (30, 30), (0, 30)]))
+    out = tmp_path / "thumb.pes"
+    export_design(d, str(out))
+    pattern = pe.read(str(out))
+    assert any("graphic" in str(k).lower() for k in pattern.extras)
 
 
 def test_import_roundtrip_positions_on_positive_hoop(tmp_path):

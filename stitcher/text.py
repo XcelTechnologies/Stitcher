@@ -14,6 +14,7 @@ tall and its top-left corner sits at ``(x_mm, y_mm)``.
 
 from __future__ import annotations
 
+import math
 from typing import List, Tuple
 
 from PySide6.QtGui import QFont, QPainterPath
@@ -31,8 +32,13 @@ def text_to_contours(
     height_mm: float,
     x_mm: float = 0.0,
     y_mm: float = 0.0,
+    rotation_deg: float = 0.0,
 ) -> List[List[Point]]:
-    """Flatten ``text`` into a list of closed contours positioned in mm."""
+    """Flatten ``text`` into a list of closed contours positioned in mm.
+
+    ``rotation_deg`` spins the laid-out glyphs about the string's own centre, so
+    the anchor ``(x_mm, y_mm)`` still describes the *unrotated* bounding box.
+    """
     if not text.strip() or height_mm <= 0:
         return []
 
@@ -62,6 +68,20 @@ def text_to_contours(
         ]
         if len(pts) >= 3:
             contours.append(pts)
+
+    if rotation_deg and contours:
+        xs = [x for c in contours for x, _ in c]
+        ys = [y for c in contours for _, y in c]
+        cx = (min(xs) + max(xs)) / 2.0
+        cy = (min(ys) + max(ys)) / 2.0
+        ca, sa = math.cos(math.radians(rotation_deg)), math.sin(math.radians(rotation_deg))
+        contours = [
+            [
+                (cx + (x - cx) * ca - (y - cy) * sa, cy + (x - cx) * sa + (y - cy) * ca)
+                for x, y in c
+            ]
+            for c in contours
+        ]
     return contours
 
 

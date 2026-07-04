@@ -70,6 +70,7 @@ class DrawingCanvas(QWidget):
         self.current_text_height_mm = DEFAULT_TEXT_HEIGHT_MM
         self.current_font_family = DEFAULT_FONT_FAMILY
         self.current_underlay = True
+        self.current_pause_after = False
 
         self._active: Optional[Union[Stroke, Region]] = None
         self.selected: Optional[Selectable] = None
@@ -155,6 +156,9 @@ class DrawingCanvas(QWidget):
     def set_underlay(self, on: bool) -> None:
         self.current_underlay = on
 
+    def set_pause_after(self, on: bool) -> None:
+        self.current_pause_after = on
+
     def add_text(self, x_mm: float, y_mm: float, text: str) -> None:
         """Called by the window once the user has typed a string."""
         if not text.strip():
@@ -171,6 +175,7 @@ class DrawingCanvas(QWidget):
                 spacing_mm=self.current_spacing_mm,
                 angle_deg=self.current_angle_deg,
                 underlay=self.current_underlay,
+                pause_after=self.current_pause_after,
             )
         )
         self.update()
@@ -193,6 +198,62 @@ class DrawingCanvas(QWidget):
         self._set_selected(None)
         self.update()
         self.design_changed.emit()
+
+    # ---- transforms ---------------------------------------------------------
+    def _all_objects(self) -> List[Selectable]:
+        return [*self.design.strokes, *self.design.regions, *self.design.texts]
+
+    def _center_of(self, box: Tuple[float, float, float, float]) -> Point:
+        return ((box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0)
+
+    def _apply_transform(self, fn) -> bool:
+        """Apply ``fn(obj, cx, cy)`` to the selection, or the whole design.
+
+        A selected object pivots about its own centre (an in-place transform);
+        with nothing selected every object pivots about the shared content centre,
+        so the design transforms as one. Returns True if anything was changed.
+        """
+        if self.selected is not None:
+            targets = [(self.selected, self._center_of(self._object_bounds(self.selected)))]
+        else:
+            objs = [o for o in self._all_objects() if o.is_drawable()]
+            if not objs:
+                return False
+            boxes = [self._object_bounds(o) for o in objs]
+            center = self._center_of((
+                min(b[0] for b in boxes), min(b[1] for b in boxes),
+                max(b[2] for b in boxes), max(b[3] for b in boxes),
+            ))
+            targets = [(o, center) for o in objs]
+        for obj, (cx, cy) in targets:
+            fn(obj, cx, cy)
+        self.update()
+        self.design_changed.emit()
+        return True
+
+    def _text_box(self, item: TextItem) -> Point:
+        return text_size_mm(item.text, item.font_family, item.height_mm)
+
+    def rotate_objects(self, deg: float) -> bool:
+        def fn(obj, cx, cy):
+            if isinstance(obj, TextItem):
+                w, h = self._text_box(obj)
+                obj.rotate(deg, cx, cy, w, h)
+            else:
+                obj.rotate(deg, cx, cy)
+        return self._apply_transform(fn)
+
+    def flip_objects(self, horizontal: bool) -> bool:
+        def fn(obj, cx, cy):
+            if isinstance(obj, TextItem):
+                w, h = self._text_box(obj)
+                obj.flip_h(cx, w) if horizontal else obj.flip_v(cy, h)
+            else:
+                obj.flip_h(cx) if horizontal else obj.flip_v(cy)
+        return self._apply_transform(fn)
+
+    def scale_objects(self, factor: float) -> bool:
+        return self._apply_transform(lambda obj, cx, cy: obj.scale(factor, cx, cy))
 
     # ---- mouse --------------------------------------------------------------
     def mousePressEvent(self, event) -> None:
@@ -220,6 +281,7 @@ class DrawingCanvas(QWidget):
                 self.current_spacing_mm,
                 self.current_angle_deg,
                 self.current_underlay,
+                self.current_pause_after,
             )
         else:
             self._active = self.design.new_stroke(
@@ -228,6 +290,7 @@ class DrawingCanvas(QWidget):
                 self.current_stitch_type,
                 self.current_width_mm,
                 self.current_underlay,
+                self.current_pause_after,
             )
         self._active.add_point(x_mm, y_mm)
         self.update()
@@ -329,6 +392,17 @@ class DrawingCanvas(QWidget):
 
     def _object_bounds(self, obj: Selectable) -> Tuple[float, float, float, float]:
         if isinstance(obj, TextItem):
+            if obj.rotation_deg:
+                # rotated text: measure the actual spun outline
+                contours = text_to_contours(
+                    obj.text, obj.font_family, obj.height_mm, obj.x_mm, obj.y_mm,
+                    obj.rotation_deg,
+                )
+                pts = [p for c in contours for p in c]
+                if pts:
+                    xs = [p[0] for p in pts]
+                    ys = [p[1] for p in pts]
+                    return (min(xs), min(ys), max(xs), max(ys))
             w, h = text_size_mm(obj.text, obj.font_family, obj.height_mm)
             return (obj.x_mm, obj.y_mm, obj.x_mm + w, obj.y_mm + h)
         pts = obj.all_points() if isinstance(obj, Region) else obj.points
@@ -462,7 +536,8 @@ class DrawingCanvas(QWidget):
             if not item.is_drawable():
                 continue
             contours = text_to_contours(
-                item.text, item.font_family, item.height_mm, item.x_mm, item.y_mm
+                item.text, item.font_family, item.height_mm, item.x_mm, item.y_mm,
+                item.rotation_deg,
             )
             # Draw the whole glyph as one even-odd path so counters (the holes in
             # o, e, p, B …) render open instead of being filled over.

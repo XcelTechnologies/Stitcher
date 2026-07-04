@@ -44,11 +44,15 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QInputDialog,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
     QSpinBox,
     QSplitter,
+    QTextBrowser,
     QToolBar,
+    QVBoxLayout,
 )
 
 from .model import (
@@ -56,8 +60,10 @@ from .model import (
     Region,
     Stroke,
     TextItem,
+    METADATA_FIELDS,
     PALETTE,
     STITCH_TYPES,
+    STITCH_RUNNING,
     STITCH_SATIN,
 )
 from .canvas import (
@@ -70,13 +76,17 @@ from .canvas import (
 from .preview import PreviewWidget
 from .imagetrace import trace_image
 from .pattern import (
+    color_blocks,
     design_to_pattern,
     export_design,
+    export_settings,
     import_design,
     pattern_stats,
+    NON_MACHINE_WRITE_FORMATS,
     SUPPORTED_WRITE_FORMATS,
     SUPPORTED_READ_FORMATS,
 )
+from . import threads
 
 PROJECT_EXT = ".stitch"
 PROJECT_FILTER = "Stitcher project (*.stitch);;All files (*)"
@@ -87,6 +97,20 @@ def _color_icon(hex_color: str) -> QIcon:
     pix = QPixmap(16, 16)
     pix.fill(QColor(hex_color))
     return QIcon(pix)
+
+
+def _outer_contour(region: Region):
+    """The region's boundary contour (largest by bounding-box area), or None."""
+    best, best_area = None, -1.0
+    for contour in region.contours:
+        if len(contour) < 3:
+            continue
+        xs = [p[0] for p in contour]
+        ys = [p[1] for p in contour]
+        area = (max(xs) - min(xs)) * (max(ys) - min(ys))
+        if area > best_area:
+            best, best_area = contour, area
+    return best
 
 
 def _image_filter() -> str:
@@ -146,6 +170,155 @@ class TraceOptionsDialog(QDialog):
         }
 
 
+class ExportOptionsDialog(QDialog):
+    """Machine-encoding options gathered just before writing a stitch file."""
+
+    def __init__(self, parent) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Export options")
+        form = QFormLayout(self)
+
+        self.limit_check = QCheckBox("Split stitches longer than")
+        self.limit_check.setToolTip(
+            "Cap the stitch length so machines that reject over-long stitches get "
+            "a clean file; longer stitches are split into a walk of shorter ones"
+        )
+        self.limit_check.setChecked(False)
+
+        self.max_stitch = QDoubleSpinBox()
+        self.max_stitch.setRange(1.0, 12.7)   # 12.7 mm is the common machine ceiling
+        self.max_stitch.setSingleStep(0.5)
+        self.max_stitch.setValue(7.0)
+        self.max_stitch.setSuffix(" mm")
+        self.max_stitch.setEnabled(False)
+        self.limit_check.toggled.connect(self.max_stitch.setEnabled)
+
+        form.addRow(self.limit_check, self.max_stitch)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+
+    def settings(self) -> Optional[dict]:
+        """A pyembroidery encoder settings dict, or None if nothing to apply."""
+        if self.limit_check.isChecked():
+            return export_settings(max_stitch_mm=self.max_stitch.value())
+        return None
+
+
+class WorksheetDialog(QDialog):
+    """The colour sew-sequence: each block's thread (named against a real spool),
+    stitch count and stops, plus whole-design totals — a run sheet for the machine.
+    """
+
+    def __init__(self, parent, blocks: list, stats: dict) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Thread worksheet")
+        self.resize(460, 420)
+        layout = QVBoxLayout(self)
+        view = QTextBrowser()
+        view.setHtml(self._html(blocks, stats))
+        layout.addWidget(view)
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.rejected.connect(self.reject)
+        buttons.accepted.connect(self.accept)
+        layout.addWidget(buttons)
+
+    @staticmethod
+    def _swatch(hex_color: str) -> str:
+        return (
+            f"<span style='background:{hex_color};"
+            "display:inline-block;width:12px;height:12px;"
+            "border:1px solid #888;'>&nbsp;&nbsp;</span>"
+        )
+
+    def _html(self, blocks: list, stats: dict) -> str:
+        rows = []
+        for b in blocks:
+            info = threads.nearest(b["hex"])
+            name = info.label if info else b["hex"]
+            stops = f" · {b['stops']} stop(s)" if b["stops"] else ""
+            rows.append(
+                f"<tr><td align='right'>{b['index']}</td>"
+                f"<td>{self._swatch(b['hex'])} {b['hex']}</td>"
+                f"<td>{name}</td>"
+                f"<td align='right'>{b['stitches']:,}{stops}</td></tr>"
+            )
+        table = (
+            "<table cellspacing='0' cellpadding='4' width='100%'>"
+            "<tr style='font-weight:bold;border-bottom:1px solid #999;'>"
+            "<td>#</td><td>Colour</td><td>Nearest spool</td>"
+            "<td align='right'>Stitches</td></tr>"
+            + "".join(rows)
+            + "</table>"
+        )
+        totals = (
+            "<p><b>Totals:</b> "
+            f"{stats['stitches']:,} stitches · {stats['colors']} colour block(s) · "
+            f"{stats['trims']} trim(s) · {stats['stops']} stop(s) · "
+            f"{stats['width_mm']:.1f} × {stats['height_mm']:.1f} mm</p>"
+        )
+        return f"<h3>Colour sequence</h3>{table}{totals}"
+
+
+class MetadataDialog(QDialog):
+    """Edit the design's free-text metadata (name, author, notes, …).
+
+    These fields are embedded into machine files that carry them on export (PES
+    keeps them all; DST keeps name/author/copyright). They don't affect stitching.
+    """
+
+    _LABELS = {
+        "name": "Name",
+        "author": "Author",
+        "category": "Category",
+        "keywords": "Keywords",
+        "comments": "Comments",
+        "copyright": "Copyright",
+    }
+
+    def __init__(self, parent, metadata: dict) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Design info")
+        self.resize(420, 300)
+        form = QFormLayout(self)
+
+        self._fields: dict = {}
+        for key in METADATA_FIELDS:
+            value = metadata.get(key, "")
+            if key == "comments":
+                widget = QPlainTextEdit(value)
+                widget.setFixedHeight(70)
+            else:
+                widget = QLineEdit(value)
+            self._fields[key] = widget
+            form.addRow(f"{self._LABELS.get(key, key.title())}:", widget)
+
+        note = QLabel("Embedded into files that support it (e.g. PES, DST). "
+                      "Doesn't affect stitching.")
+        note.setWordWrap(True)
+        note.setStyleSheet("color: gray;")
+        form.addRow(note)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+
+    def values(self) -> dict:
+        """Non-empty metadata fields entered by the user."""
+        out: dict = {}
+        for key, widget in self._fields.items():
+            if isinstance(widget, QPlainTextEdit):
+                text = widget.toPlainText().strip()
+            else:
+                text = widget.text().strip()
+            if text:
+                out[key] = text
+        return out
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -201,6 +374,12 @@ class MainWindow(QMainWindow):
         self.act_export = QAction("&Export…", self, shortcut="Ctrl+E")
         self.act_export.triggered.connect(self._export)
 
+        self.act_worksheet = QAction("Thread &worksheet…", self, shortcut="Ctrl+W")
+        self.act_worksheet.triggered.connect(self._show_worksheet)
+
+        self.act_metadata = QAction("Design &info…", self)
+        self.act_metadata.triggered.connect(self._edit_metadata)
+
         self.act_quit = QAction("&Quit", self, shortcut=QKeySequence.Quit)
         self.act_quit.triggered.connect(self.close)
 
@@ -209,6 +388,25 @@ class MainWindow(QMainWindow):
 
         self.act_clear = QAction("&Clear", self)
         self.act_clear.triggered.connect(self._confirm_clear)
+
+        # transforms — act on the selection, or the whole design if nothing is picked
+        self.act_rotate_cw = QAction("Rotate 90° &CW", self, shortcut="Ctrl+R")
+        self.act_rotate_cw.triggered.connect(lambda: self.canvas.rotate_objects(90))
+        self.act_rotate_ccw = QAction("Rotate 90° CC&W", self, shortcut="Ctrl+Shift+R")
+        self.act_rotate_ccw.triggered.connect(lambda: self.canvas.rotate_objects(-90))
+        self.act_flip_h = QAction("Flip &Horizontal", self)
+        self.act_flip_h.triggered.connect(lambda: self.canvas.flip_objects(True))
+        self.act_flip_v = QAction("Flip &Vertical", self)
+        self.act_flip_v.triggered.connect(lambda: self.canvas.flip_objects(False))
+        self.act_scale = QAction("&Scale…", self)
+        self.act_scale.triggered.connect(self._scale_objects)
+
+        self.act_applique = QAction("Make &appliqué", self)
+        self.act_applique.setToolTip(
+            "From the selected region, add placement + tackdown outlines that stop "
+            "the machine so you can lay and trim appliqué fabric before the cover"
+        )
+        self.act_applique.triggered.connect(self._make_applique)
 
         self.act_about = QAction("&About Stitcher", self)
         self.act_about.triggered.connect(self._about)
@@ -227,11 +425,23 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.act_trace)
         file_menu.addAction(self.act_export)
         file_menu.addSeparator()
+        file_menu.addAction(self.act_worksheet)
+        file_menu.addAction(self.act_metadata)
+        file_menu.addSeparator()
         file_menu.addAction(self.act_quit)
 
         edit_menu = bar.addMenu("&Edit")
         edit_menu.addAction(self.act_undo)
         edit_menu.addAction(self.act_clear)
+
+        obj_menu = bar.addMenu("&Object")
+        obj_menu.addAction(self.act_rotate_cw)
+        obj_menu.addAction(self.act_rotate_ccw)
+        obj_menu.addAction(self.act_flip_h)
+        obj_menu.addAction(self.act_flip_v)
+        obj_menu.addAction(self.act_scale)
+        obj_menu.addSeparator()
+        obj_menu.addAction(self.act_applique)
 
         help_menu = bar.addMenu("&Help")
         help_menu.addAction(self.act_about)
@@ -254,11 +464,14 @@ class MainWindow(QMainWindow):
 
         tb.addSeparator()
 
-        # colour palette
+        # colour palette: the quick house colours, then the full named catalogue
         tb.addWidget(QLabel(" Thread: "))
         self.color_combo = QComboBox()
         for name, hex_color in PALETTE:
             self.color_combo.addItem(_color_icon(hex_color), name, hex_color)
+        self.color_combo.insertSeparator(self.color_combo.count())
+        for info in threads.catalog_threads():
+            self.color_combo.addItem(_color_icon(info.hex), info.label, info.hex)
         self.color_combo.currentIndexChanged.connect(self._on_color_changed)
         tb.addWidget(self.color_combo)
 
@@ -338,6 +551,16 @@ class MainWindow(QMainWindow):
         self.underlay_check.setChecked(self.canvas.current_underlay)
         self.underlay_check.toggled.connect(self._on_underlay_changed)
         self._underlay_widgets.append(tb.addWidget(self.underlay_check))
+
+        # ---- pause / appliqué stop (all object kinds) ----------------------
+        self.pause_check = QCheckBox("Pause after")
+        self.pause_check.setToolTip(
+            "Insert a machine STOP after this object — for appliqué (place or trim "
+            "fabric between passes) or a manual thread change on a single-needle machine"
+        )
+        self.pause_check.setChecked(self.canvas.current_pause_after)
+        self.pause_check.toggled.connect(self._on_pause_changed)
+        self._underlay_widgets.append(tb.addWidget(self.pause_check))
 
         # ---- trim distance (whole-design preference) -----------------------
         tb.addSeparator()
@@ -454,6 +677,13 @@ class MainWindow(QMainWindow):
         else:
             self.canvas.set_underlay(on)
 
+    def _on_pause_changed(self, on: bool) -> None:
+        if self.canvas.selected is not None:
+            self.canvas.selected.pause_after = on
+            self._after_edit()
+        else:
+            self.canvas.set_pause_after(on)
+
     def _on_trim_changed(self, value: float) -> None:
         """The trim distance is a whole-design preference, not per-object."""
         self.design.trim_jump_mm = value
@@ -507,7 +737,7 @@ class MainWindow(QMainWindow):
         widgets = [
             self.color_combo, self.length_spin, self.type_combo, self.width_spin,
             self.spacing_spin, self.angle_spin, self.font_combo,
-            self.text_height_spin, self.underlay_check,
+            self.text_height_spin, self.underlay_check, self.pause_check,
         ]
         for w in widgets:
             w.blockSignals(True)
@@ -527,6 +757,7 @@ class MainWindow(QMainWindow):
                 self.font_combo.setCurrentFont(QFont(obj.font_family))
                 self.text_height_spin.setValue(obj.height_mm)
             self.underlay_check.setChecked(getattr(obj, "underlay", True))
+            self.pause_check.setChecked(getattr(obj, "pause_after", False))
         finally:
             for w in widgets:
                 w.blockSignals(False)
@@ -677,7 +908,20 @@ class MainWindow(QMainWindow):
             filename += PROJECT_EXT
         return self._write_project(filename)
 
+    def _seed_name_from_filename(self, filename: str) -> None:
+        """Default the design's metadata name to the file's stem, if unset.
+
+        Gives exports a sensible embedded name without the user opening Design
+        info; never overwrites a name they (or an earlier save) already set.
+        """
+        if self.design.metadata.get("name"):
+            return
+        stem = os.path.splitext(os.path.basename(filename))[0].strip()
+        if stem:
+            self.design.metadata = {**self.design.metadata, "name": stem}
+
     def _write_project(self, filename: str) -> bool:
+        self._seed_name_from_filename(filename)
         try:
             with open(filename, "w", encoding="utf-8") as fh:
                 json.dump(self.design.to_dict(), fh, indent=2)
@@ -787,12 +1031,85 @@ class MainWindow(QMainWindow):
         if not os.path.splitext(filename)[1]:
             filename = f"{filename}.{ext}"
 
+        # machine formats get encoder options; SVG/PNG/G-code don't use them
+        settings = None
+        if os.path.splitext(filename)[1].lower().lstrip(".") not in NON_MACHINE_WRITE_FORMATS:
+            dialog = ExportOptionsDialog(self)
+            if dialog.exec() != QDialog.Accepted:
+                return
+            settings = dialog.settings()
+
+        # Give an unsaved design a sensible embedded name from the export
+        # filename — transiently, so exporting never mutates the project itself.
+        saved_meta = self.design.metadata
+        if not saved_meta.get("name"):
+            stem = os.path.splitext(os.path.basename(filename))[0].strip()
+            if stem:
+                self.design.metadata = {**saved_meta, "name": stem}
         try:
-            export_design(self.design, filename)
+            export_design(self.design, filename, settings)
         except Exception as exc:  # pyembroidery raises plain exceptions
             QMessageBox.critical(self, "Export failed", f"{exc}")
             return
+        finally:
+            self.design.metadata = saved_meta
         self.statusBar().showMessage(f"Exported {os.path.basename(filename)}", 5000)
+
+    # ---- thread worksheet ---------------------------------------------------
+    def _show_worksheet(self) -> None:
+        if not self.design.has_content():
+            QMessageBox.information(self, "Nothing to list", "Draw something first.")
+            return
+        pattern = design_to_pattern(self.design)
+        WorksheetDialog(self, color_blocks(pattern), pattern_stats(pattern)).exec()
+
+    # ---- transforms & appliqué ----------------------------------------------
+    def _scale_objects(self) -> None:
+        percent, ok = QInputDialog.getDouble(
+            self, "Scale", "Scale (%):", 100.0, 5.0, 1000.0, 1
+        )
+        if ok and percent > 0 and abs(percent - 100.0) > 1e-6:
+            self.canvas.scale_objects(percent / 100.0)
+
+    def _make_applique(self) -> None:
+        region = self.canvas.selected
+        if not isinstance(region, Region) or not region.is_drawable():
+            QMessageBox.information(
+                self, "Make appliqué",
+                "Select a filled region first — its outline becomes the appliqué "
+                "placement and tackdown passes.",
+            )
+            return
+        outer = _outer_contour(region)
+        if outer is None:
+            return
+        closed = list(outer) + [outer[0]]
+        # placement marks where fabric goes, tackdown holds it; the machine stops
+        # after each so you can lay then trim the fabric before the region covers it
+        passes = [
+            Stroke(color=region.color, stitch_length_mm=region.stitch_length_mm,
+                   points=list(closed), stitch_type=STITCH_RUNNING, pause_after=True)
+            for _ in range(2)
+        ]
+        # strokes always sew before regions, so these precede the cover fill
+        self.design.strokes.extend(passes)
+        self._set_dirty(True)
+        self.canvas.update()
+        self._refresh()
+        self.statusBar().showMessage(
+            "Added appliqué placement + tackdown outlines — sew order: "
+            "placement → STOP → tackdown → STOP → cover.", 8000
+        )
+
+    # ---- design metadata ----------------------------------------------------
+    def _edit_metadata(self) -> None:
+        dialog = MetadataDialog(self, self.design.metadata)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        new_meta = dialog.values()
+        if new_meta != self.design.metadata:
+            self.design.metadata = new_meta
+            self._set_dirty(True)
 
 
 def run() -> None:

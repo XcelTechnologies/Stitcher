@@ -3,7 +3,15 @@
 
 import pytest
 
-from stitcher.app import MainWindow, TraceOptionsDialog, _image_filter, _app_icon
+from stitcher.app import (
+    MainWindow,
+    TraceOptionsDialog,
+    ExportOptionsDialog,
+    WorksheetDialog,
+    MetadataDialog,
+    _image_filter,
+    _app_icon,
+)
 from stitcher.canvas import TOOL_SELECT, TOOL_STROKE, TOOL_REGION, TOOL_TEXT
 from stitcher.model import Region, Stroke, TextItem
 
@@ -130,3 +138,147 @@ def test_trace_options_dialog_values(window):
 
 def test_app_icon_not_null():
     assert not _app_icon().isNull()
+
+
+def test_thread_combo_includes_named_catalog(window):
+    # the quick palette plus the full named catalogue (well over the 7 house colours)
+    assert window.color_combo.count() > 20
+
+
+def test_pause_checkbox_edits_selection_and_sets_default(window):
+    c = window.canvas
+    # with no selection, toggling sets the new-object default
+    c._set_selected(None)
+    window.pause_check.setChecked(True)
+    assert c.current_pause_after is True
+
+    # with a selection, it edits that object and the toolbar reflects its state
+    s = Stroke(points=[(0, 0), (10, 0)], pause_after=False)
+    c.design.strokes.append(s)
+    c._set_selected(s)
+    assert window.pause_check.isChecked() is False      # populated from the object
+    window.pause_check.setChecked(True)
+    assert s.pause_after is True                          # applied to the selection
+
+
+def test_export_options_dialog_settings(window):
+    dlg = ExportOptionsDialog(window)
+    assert dlg.settings() is None                        # off by default
+    dlg.limit_check.setChecked(True)
+    dlg.max_stitch.setValue(6.0)
+    assert dlg.settings()["max_stitch"] == 60.0          # mm -> embroidery units
+
+
+def test_metadata_dialog_reads_and_returns_nonblank(window):
+    dlg = MetadataDialog(window, {"name": "Logo", "author": "Paul"})
+    # existing values are populated
+    assert dlg._fields["name"].text() == "Logo"
+    # a blank field is omitted from the result
+    dlg._fields["author"].setText("   ")
+    dlg._fields["comments"].setPlainText("first draft")
+    vals = dlg.values()
+    assert vals == {"name": "Logo", "comments": "first draft"}
+
+
+def test_edit_metadata_applies_and_marks_dirty(window):
+    window._set_dirty(False)
+    import stitcher.app as A
+    # simulate the user filling in the dialog and clicking OK
+    orig = A.MetadataDialog
+
+    class _Stub:
+        def __init__(self, parent, metadata):
+            pass
+
+        def exec(self):
+            return A.QDialog.Accepted
+
+        def values(self):
+            return {"name": "Stubbed"}
+
+    A.MetadataDialog = _Stub
+    try:
+        window._edit_metadata()
+    finally:
+        A.MetadataDialog = orig
+    assert window.design.metadata == {"name": "Stubbed"}
+    assert window._dirty is True
+
+
+def test_rotate_whole_design_marks_dirty(window):
+    c = window.canvas
+    c.design.strokes.append(Stroke(points=[(10, 0), (20, 0)]))
+    c.design.texts.append(TextItem(text="Hi", x_mm=5, y_mm=5, height_mm=10))
+    c._set_selected(None)
+    window._set_dirty(False)
+    assert c.rotate_objects(90) is True
+    assert c.design.texts[0].rotation_deg == 90.0
+    assert window._dirty is True
+
+
+def test_transform_selected_object_only(window):
+    c = window.canvas
+    keep = Stroke(points=[(0, 0), (5, 0)])
+    move = Stroke(points=[(10, 0), (20, 0)])
+    c.design.strokes.extend([keep, move])
+    c._set_selected(move)
+    before_keep = list(keep.points)
+    before_move = list(move.points)
+    c.flip_objects(True)
+    assert keep.points == before_keep        # untouched
+    assert move.points != before_move        # transformed
+
+
+def test_make_applique_adds_two_pausing_outlines(window):
+    c = window.canvas
+    region = Region(color="#2a9d3a", contours=[[(0, 0), (30, 0), (30, 30), (0, 30)]])
+    c.design.regions.append(region)
+    c._set_selected(region)
+    window._make_applique()
+    assert len(c.design.strokes) == 2
+    assert all(s.pause_after for s in c.design.strokes)
+    # both trace the region outline (closed) and sew before the region cover
+    assert all(len(s.points) >= 5 for s in c.design.strokes)
+
+
+def test_make_applique_needs_a_region(window):
+    c = window.canvas
+    c.design.strokes.append(Stroke(points=[(0, 0), (10, 0)]))
+    c._set_selected(c.design.strokes[0])
+    import stitcher.app as A
+    calls = []
+    orig = A.QMessageBox.information
+    A.QMessageBox.information = staticmethod(lambda *a, **k: calls.append(a))
+    try:
+        window._make_applique()
+    finally:
+        A.QMessageBox.information = orig
+    assert calls                              # told the user to pick a region
+    assert len(c.design.strokes) == 1         # nothing added
+
+
+def test_save_seeds_name_from_filename(window, tmp_path):
+    window.canvas.design.strokes.append(Stroke(points=[(0, 0), (10, 0)]))
+    assert window.design.metadata.get("name") is None
+    window._write_project(str(tmp_path / "My Cool Logo.stitch"))
+    assert window.design.metadata.get("name") == "My Cool Logo"
+
+
+def test_save_does_not_overwrite_existing_name(window, tmp_path):
+    window.canvas.design.strokes.append(Stroke(points=[(0, 0), (10, 0)]))
+    window.design.metadata = {"name": "Kept"}
+    window._write_project(str(tmp_path / "Other.stitch"))
+    assert window.design.metadata["name"] == "Kept"
+
+
+def test_worksheet_dialog_lists_colours(window):
+    window.canvas.design.strokes.append(Stroke(color="#d1495b", points=[(0, 0), (20, 5)]))
+    window.canvas.design.regions.append(
+        Region(color="#2a6fd1", contours=[[(0, 30), (20, 30), (20, 50)]], spacing_mm=2.0)
+    )
+    from stitcher.pattern import design_to_pattern, color_blocks, pattern_stats
+    pat = design_to_pattern(window.canvas.design)
+    dlg = WorksheetDialog(window, color_blocks(pat), pattern_stats(pat))
+    html = dlg._html(color_blocks(pat), pattern_stats(pat))
+    assert "#d1495b" in html and "#2a6fd1" in html
+    assert "Totals" in html

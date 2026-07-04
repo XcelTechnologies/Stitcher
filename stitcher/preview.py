@@ -105,6 +105,14 @@ class PreviewWidget(QWidget):
                 self._to_px(x1, y1, scale, ox, oy),
             )
 
+        # sequins — a filled disc in the thread colour at each drop point
+        for x0, y0, x1, y1, kind, color in self._segments:
+            if kind != "sequin":
+                continue
+            painter.setPen(QPen(QColor("#222"), 0.6))
+            painter.setBrush(QColor(*color))
+            painter.drawEllipse(self._to_px(x0, y0, scale, ox, oy), 3.2, 3.2)
+
         # needle points
         if self.show_points:
             painter.setPen(Qt.NoPen)

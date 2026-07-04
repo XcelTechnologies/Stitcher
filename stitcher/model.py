@@ -14,10 +14,17 @@ A design holds three kinds of object:
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 Point = Tuple[float, float]  # (x_mm, y_mm)
+
+
+def _rotate_point(x: float, y: float, cx: float, cy: float, ca: float, sa: float) -> Point:
+    """Rotate (x, y) about (cx, cy) given cos/sin of the angle."""
+    dx, dy = x - cx, y - cy
+    return (cx + dx * ca - dy * sa, cy + dx * sa + dy * ca)
 
 DEFAULT_STITCH_LENGTH_MM = 3.0
 DEFAULT_HOOP_MM = (100.0, 100.0)
@@ -32,14 +39,21 @@ DEFAULT_FONT_FAMILY = "Arial"
 # jump thread connecting them (see pattern._stitch_object).
 DEFAULT_TRIM_JUMP_MM = 1.0
 
+# Free-text design metadata embedded into machine files that carry it. PES stores
+# all of these; DST stores name/author/copyright. Optional — blank fields are
+# simply not written.
+METADATA_FIELDS = ["name", "author", "category", "keywords", "comments", "copyright"]
+
 # Stitch types available for a Stroke.
 STITCH_RUNNING = "running"
 STITCH_BEAN = "bean"
 STITCH_SATIN = "satin"
+STITCH_SEQUIN = "sequin"    # drops a sequin at each point instead of stitching
 STITCH_TYPES = [
     (STITCH_RUNNING, "Running"),
     (STITCH_BEAN, "Bean (triple)"),
     (STITCH_SATIN, "Satin"),
+    (STITCH_SEQUIN, "Sequin"),
 ]
 
 # A small palette of thread colours (name, "#rrggbb").
@@ -64,12 +78,26 @@ class Stroke:
     stitch_type: str = STITCH_RUNNING
     width_mm: float = DEFAULT_SATIN_WIDTH_MM   # satin column width
     underlay: bool = True                      # satin: sew a stabilizing pass first
+    pause_after: bool = False                  # halt the machine (STOP) after sewing this
 
     def add_point(self, x_mm: float, y_mm: float) -> None:
         self.points.append((x_mm, y_mm))
 
     def translate(self, dx_mm: float, dy_mm: float) -> None:
         self.points = [(x + dx_mm, y + dy_mm) for x, y in self.points]
+
+    def rotate(self, deg: float, cx: float, cy: float) -> None:
+        ca, sa = math.cos(math.radians(deg)), math.sin(math.radians(deg))
+        self.points = [_rotate_point(x, y, cx, cy, ca, sa) for x, y in self.points]
+
+    def scale(self, factor: float, cx: float, cy: float) -> None:
+        self.points = [(cx + (x - cx) * factor, cy + (y - cy) * factor) for x, y in self.points]
+
+    def flip_h(self, cx: float) -> None:
+        self.points = [(2 * cx - x, y) for x, y in self.points]
+
+    def flip_v(self, cy: float) -> None:
+        self.points = [(x, 2 * cy - y) for x, y in self.points]
 
     def is_drawable(self) -> bool:
         return len(self.points) >= 2
@@ -82,6 +110,7 @@ class Stroke:
             "stitch_type": self.stitch_type,
             "width_mm": self.width_mm,
             "underlay": self.underlay,
+            "pause_after": self.pause_after,
         }
 
     @classmethod
@@ -93,6 +122,7 @@ class Stroke:
             stitch_type=data.get("stitch_type", STITCH_RUNNING),
             width_mm=float(data.get("width_mm", DEFAULT_SATIN_WIDTH_MM)),
             underlay=bool(data.get("underlay", True)),
+            pause_after=bool(data.get("pause_after", False)),
         )
 
 
@@ -112,6 +142,7 @@ class Region:
     spacing_mm: float = DEFAULT_FILL_SPACING_MM          # gap between rows
     angle_deg: float = DEFAULT_FILL_ANGLE_DEG            # row direction
     underlay: bool = True                                # run the boundary first
+    pause_after: bool = False                            # halt (STOP) after sewing this
 
     @property
     def points(self) -> List[Point]:
@@ -131,6 +162,25 @@ class Region:
             [(x + dx_mm, y + dy_mm) for x, y in contour] for contour in self.contours
         ]
 
+    def rotate(self, deg: float, cx: float, cy: float) -> None:
+        ca, sa = math.cos(math.radians(deg)), math.sin(math.radians(deg))
+        self.contours = [
+            [_rotate_point(x, y, cx, cy, ca, sa) for x, y in contour]
+            for contour in self.contours
+        ]
+
+    def scale(self, factor: float, cx: float, cy: float) -> None:
+        self.contours = [
+            [(cx + (x - cx) * factor, cy + (y - cy) * factor) for x, y in contour]
+            for contour in self.contours
+        ]
+
+    def flip_h(self, cx: float) -> None:
+        self.contours = [[(2 * cx - x, y) for x, y in c] for c in self.contours]
+
+    def flip_v(self, cy: float) -> None:
+        self.contours = [[(x, 2 * cy - y) for x, y in c] for c in self.contours]
+
     def is_drawable(self) -> bool:
         return any(len(contour) >= 3 for contour in self.contours)
 
@@ -142,6 +192,7 @@ class Region:
             "spacing_mm": self.spacing_mm,
             "angle_deg": self.angle_deg,
             "underlay": self.underlay,
+            "pause_after": self.pause_after,
         }
 
     @classmethod
@@ -157,6 +208,7 @@ class Region:
             spacing_mm=float(data.get("spacing_mm", DEFAULT_FILL_SPACING_MM)),
             angle_deg=float(data.get("angle_deg", DEFAULT_FILL_ANGLE_DEG)),
             underlay=bool(data.get("underlay", True)),
+            pause_after=bool(data.get("pause_after", False)),
         )
 
 
@@ -174,10 +226,34 @@ class TextItem:
     spacing_mm: float = DEFAULT_FILL_SPACING_MM
     angle_deg: float = DEFAULT_FILL_ANGLE_DEG
     underlay: bool = True
+    pause_after: bool = False                            # halt (STOP) after sewing this
+    rotation_deg: float = 0.0                            # spin about the text's centre
 
     def translate(self, dx_mm: float, dy_mm: float) -> None:
         self.x_mm += dx_mm
         self.y_mm += dy_mm
+
+    # Text transforms take the (unrotated) box size from the caller so the model
+    # stays free of Qt font metrics; the app measures it with text_size_mm.
+    def scale(self, factor: float, cx: float, cy: float) -> None:
+        self.x_mm = cx + (self.x_mm - cx) * factor
+        self.y_mm = cy + (self.y_mm - cy) * factor
+        self.height_mm *= factor
+
+    def rotate(self, deg: float, cx: float, cy: float, box_w: float, box_h: float) -> None:
+        ccx, ccy = self.x_mm + box_w / 2.0, self.y_mm + box_h / 2.0
+        ca, sa = math.cos(math.radians(deg)), math.sin(math.radians(deg))
+        ncx, ncy = _rotate_point(ccx, ccy, cx, cy, ca, sa)
+        self.rotation_deg = (self.rotation_deg + deg) % 360.0
+        self.x_mm, self.y_mm = ncx - box_w / 2.0, ncy - box_h / 2.0
+
+    def flip_h(self, cx: float, box_w: float) -> None:
+        self.x_mm = 2 * cx - self.x_mm - box_w
+        self.rotation_deg = (-self.rotation_deg) % 360.0
+
+    def flip_v(self, cy: float, box_h: float) -> None:
+        self.y_mm = 2 * cy - self.y_mm - box_h
+        self.rotation_deg = (-self.rotation_deg) % 360.0
 
     def is_drawable(self) -> bool:
         return bool(self.text.strip())
@@ -194,6 +270,8 @@ class TextItem:
             "spacing_mm": self.spacing_mm,
             "angle_deg": self.angle_deg,
             "underlay": self.underlay,
+            "pause_after": self.pause_after,
+            "rotation_deg": self.rotation_deg,
         }
 
     @classmethod
@@ -209,6 +287,8 @@ class TextItem:
             spacing_mm=float(data.get("spacing_mm", DEFAULT_FILL_SPACING_MM)),
             angle_deg=float(data.get("angle_deg", DEFAULT_FILL_ANGLE_DEG)),
             underlay=bool(data.get("underlay", True)),
+            pause_after=bool(data.get("pause_after", False)),
+            rotation_deg=float(data.get("rotation_deg", 0.0)),
         )
 
 
@@ -221,6 +301,8 @@ class Design:
     # Travel longer than this between runs is cut (trimmed) rather than leaving a
     # connector thread strung across the design.
     trim_jump_mm: float = DEFAULT_TRIM_JUMP_MM
+    # Free-text metadata (name/author/… — see METADATA_FIELDS) embedded on export.
+    metadata: Dict[str, str] = field(default_factory=dict)
     strokes: List[Stroke] = field(default_factory=list)
     regions: List[Region] = field(default_factory=list)
     texts: List[TextItem] = field(default_factory=list)
@@ -233,6 +315,7 @@ class Design:
         stitch_type: str = STITCH_RUNNING,
         width_mm: float = DEFAULT_SATIN_WIDTH_MM,
         underlay: bool = True,
+        pause_after: bool = False,
     ) -> Stroke:
         stroke = Stroke(
             color=color,
@@ -240,6 +323,7 @@ class Design:
             stitch_type=stitch_type,
             width_mm=width_mm,
             underlay=underlay,
+            pause_after=pause_after,
         )
         self.strokes.append(stroke)
         return stroke
@@ -251,6 +335,7 @@ class Design:
         spacing_mm: float,
         angle_deg: float,
         underlay: bool = True,
+        pause_after: bool = False,
     ) -> Region:
         region = Region(
             color=color,
@@ -258,6 +343,7 @@ class Design:
             spacing_mm=spacing_mm,
             angle_deg=angle_deg,
             underlay=underlay,
+            pause_after=pause_after,
         )
         self.regions.append(region)
         return region
@@ -295,6 +381,7 @@ class Design:
             "hoop_width_mm": self.hoop_width_mm,
             "hoop_height_mm": self.hoop_height_mm,
             "trim_jump_mm": self.trim_jump_mm,
+            "metadata": dict(self.metadata),
             "strokes": [s.to_dict() for s in self.strokes],
             "regions": [r.to_dict() for r in self.regions],
             "texts": [t.to_dict() for t in self.texts],
@@ -302,10 +389,12 @@ class Design:
 
     @classmethod
     def from_dict(cls, data: dict) -> "Design":
+        meta = data.get("metadata", {})
         return cls(
             hoop_width_mm=float(data.get("hoop_width_mm", DEFAULT_HOOP_MM[0])),
             hoop_height_mm=float(data.get("hoop_height_mm", DEFAULT_HOOP_MM[1])),
             trim_jump_mm=float(data.get("trim_jump_mm", DEFAULT_TRIM_JUMP_MM)),
+            metadata={str(k): str(v) for k, v in meta.items() if v},
             strokes=[Stroke.from_dict(s) for s in data.get("strokes", [])],
             regions=[Region.from_dict(r) for r in data.get("regions", [])],
             texts=[TextItem.from_dict(t) for t in data.get("texts", [])],
