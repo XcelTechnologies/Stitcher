@@ -28,6 +28,10 @@ DEFAULT_FILL_ANGLE_DEG = 0.0
 DEFAULT_TEXT_HEIGHT_MM = 14.0
 DEFAULT_FONT_FAMILY = "Arial"
 
+# Travel longer than this between two runs cuts the thread instead of leaving a
+# jump thread connecting them (see pattern._stitch_object).
+DEFAULT_TRIM_JUMP_MM = 1.0
+
 # Stitch types available for a Stroke.
 STITCH_RUNNING = "running"
 STITCH_BEAN = "bean"
@@ -214,6 +218,9 @@ class Design:
 
     hoop_width_mm: float = DEFAULT_HOOP_MM[0]
     hoop_height_mm: float = DEFAULT_HOOP_MM[1]
+    # Travel longer than this between runs is cut (trimmed) rather than leaving a
+    # connector thread strung across the design.
+    trim_jump_mm: float = DEFAULT_TRIM_JUMP_MM
     strokes: List[Stroke] = field(default_factory=list)
     regions: List[Region] = field(default_factory=list)
     texts: List[TextItem] = field(default_factory=list)
@@ -287,6 +294,7 @@ class Design:
         return {
             "hoop_width_mm": self.hoop_width_mm,
             "hoop_height_mm": self.hoop_height_mm,
+            "trim_jump_mm": self.trim_jump_mm,
             "strokes": [s.to_dict() for s in self.strokes],
             "regions": [r.to_dict() for r in self.regions],
             "texts": [t.to_dict() for t in self.texts],
@@ -297,6 +305,7 @@ class Design:
         return cls(
             hoop_width_mm=float(data.get("hoop_width_mm", DEFAULT_HOOP_MM[0])),
             hoop_height_mm=float(data.get("hoop_height_mm", DEFAULT_HOOP_MM[1])),
+            trim_jump_mm=float(data.get("trim_jump_mm", DEFAULT_TRIM_JUMP_MM)),
             strokes=[Stroke.from_dict(s) for s in data.get("strokes", [])],
             regions=[Region.from_dict(r) for r in data.get("regions", [])],
             texts=[TextItem.from_dict(t) for t in data.get("texts", [])],

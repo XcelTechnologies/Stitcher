@@ -124,6 +124,35 @@ def test_pattern_to_segments_has_stitch_kinds():
     assert "stitch" in kinds
 
 
+def _count_trims(pattern):
+    return sum(1 for _x, _y, c in pattern.stitches if (c & pe.COMMAND_MASK) == pe.TRIM)
+
+
+def test_trim_jump_cuts_long_travels_between_columns():
+    # one region of two separated blobs -> two fill columns (runs) within a
+    # single object, with a long travel between them
+    d = Design()
+    d.regions.append(
+        Region(contours=[_square(10, x=0), _square(10, x=60)],
+               spacing_mm=2.0, underlay=False)
+    )
+
+    d.trim_jump_mm = 100.0                 # far enough that nothing is cut
+    loose = design_to_pattern(d)
+    d.trim_jump_mm = 1.0                    # cut anything but the shortest hops
+    tight = design_to_pattern(d)
+
+    # a smaller trim distance means more thread cuts...
+    assert _count_trims(tight) > _count_trims(loose)
+    # ...and no long connector is drawn in the preview once travels are cut
+    tight_jumps = [s for s in pattern_to_segments(tight) if s[4] == "jump"]
+    long_jumps = [
+        s for s in tight_jumps
+        if math.hypot(s[2] - s[0], s[3] - s[1]) > 1.0 * UNITS_PER_MM
+    ]
+    assert long_jumps == []
+
+
 @pytest.mark.parametrize("ext", ["dst", "pes", "exp", "jef", "svg"])
 def test_export_writes_nonempty_file(tmp_path, ext):
     d = Design()

@@ -24,6 +24,7 @@ from .model import (
     Stroke,
     TextItem,
     DEFAULT_HOOP_MM,
+    DEFAULT_TRIM_JUMP_MM,
     STITCH_BEAN,
     STITCH_SATIN,
 )
@@ -36,6 +37,13 @@ MIN_STITCH_MM = 0.3
 # Tie stitches anchor the thread so the run doesn't unravel at its ends.
 TIE_LENGTH_MM = 0.7   # how far each tack stitch reaches from the anchor point
 TIE_COUNT = 3         # number of tack stitches at each end of a run
+
+# Fallback travel threshold (mm): a jump longer than this between two runs cuts
+# the thread (tie-off, trim, then tie-in on the far side) instead of leaving a
+# connector thread. Each Design carries its own ``trim_jump_mm`` (defaulting to
+# ``DEFAULT_TRIM_JUMP_MM``); this constant is only used when a caller stitches an
+# object without specifying one.
+JUMP_TRIM_MM = DEFAULT_TRIM_JUMP_MM
 
 MIN_FILL_SPACING_MM = 0.3
 
@@ -367,22 +375,48 @@ def _design_objects(design: Design) -> List[Tuple[str, List[List[UnitPoint]]]]:
     return objects
 
 
-def _stitch_object(pattern: pe.EmbPattern, runs: List[List[UnitPoint]]) -> None:
-    """Sew one object's runs, tying in at the very start and off at the very end."""
+def _stitch_object(
+    pattern: pe.EmbPattern,
+    runs: List[List[UnitPoint]],
+    trim_jump_mm: float = JUMP_TRIM_MM,
+) -> None:
+    """Sew one object's runs.
+
+    The thread ties in at the very start and off at the very end. Between runs it
+    normally travels as a short jump, but when the gap to the next run exceeds
+    ``trim_jump_mm`` the thread is tied off and trimmed, then tied back in on the
+    far side — so no long connector thread is left strung across the design.
+    """
+    runs = [run for run in runs if run]
+    if not runs:
+        return
+    trim_units = trim_jump_mm * UNITS_PER_MM
     last = len(runs) - 1
+    tie_in = True                                 # first run always ties in
     for ri, run in enumerate(runs):
-        if not run:
-            continue
-        pattern.move_abs(run[0][0], run[0][1])   # jump to the run start (needle up)
-        if ri == 0 and len(run) >= 2:
-            _tack(pattern, run[0], run[1])        # tie-in ends on run[0]...
-            body = run[1:]                        # ...so stitching continues from run[1]
+        pattern.move_abs(run[0][0], run[0][1])    # jump to the run start (needle up)
+        if tie_in and len(run) >= 2:
+            _tack(pattern, run[0], run[1])         # tie-in ends on run[0]...
+            body = run[1:]                         # ...so stitching continues from run[1]
         else:
-            body = run                            # later runs penetrate their start too
+            body = run                             # continued runs penetrate their start too
         for x, y in body:
             pattern.stitch_abs(x, y)
-        if ri == last and len(run) >= 2:
-            _tack(pattern, run[-1], run[-2])      # tie-off after the final run
+
+        if ri == last:
+            if len(run) >= 2:
+                _tack(pattern, run[-1], run[-2])   # tie-off after the final run
+            break
+
+        nxt = runs[ri + 1]
+        gap = math.hypot(nxt[0][0] - run[-1][0], nxt[0][1] - run[-1][1])
+        if gap > trim_units:
+            if len(run) >= 2:
+                _tack(pattern, run[-1], run[-2])   # tie-off before cutting the thread
+            pattern.trim()                         # cut, so no connector thread is left
+            tie_in = True                          # re-anchor on the far side
+        else:
+            tie_in = False                         # short hop: stay threaded, no tack
 
 
 def design_to_pattern(design: Design) -> pe.EmbPattern:
@@ -399,7 +433,7 @@ def design_to_pattern(design: Design) -> pe.EmbPattern:
                 pattern.color_change()
                 _add_thread(pattern, color)
 
-        _stitch_object(pattern, runs)
+        _stitch_object(pattern, runs, design.trim_jump_mm)
         prev_color = color
 
     pattern.end()
@@ -486,22 +520,30 @@ def pattern_to_segments(pattern: pe.EmbPattern) -> List[Segment]:
         return (26, 26, 26)
 
     prev: Tuple[float, float] | None = None
+    cut = True  # thread starts cut; a jump only leaves a connector once we're sewing
     for x, y, command in pattern.stitches:
         code = command & pe.COMMAND_MASK
         if code == pe.STITCH:
             if prev is not None:
                 segments.append((prev[0], prev[1], x, y, "stitch", current_color()))
             prev = (x, y)
+            cut = False
         elif code == pe.JUMP:
-            if prev is not None:
+            # A jump after a trim/colour-change is just needle travel with the
+            # thread cut — no connector is left, so don't draw it.
+            if prev is not None and not cut:
                 segments.append((prev[0], prev[1], x, y, "jump", current_color()))
             prev = (x, y)
         elif code in (pe.COLOR_CHANGE, pe.NEEDLE_SET):
             color_index += 1
             prev = (x, y)
+            cut = True
+        elif code == pe.TRIM:
+            prev = (x, y)
+            cut = True
         elif code == pe.END:
             break
-        else:  # TRIM, STOP, etc. — keep the needle position, draw nothing.
+        else:  # STOP, etc. — keep the needle position, draw nothing.
             prev = (x, y)
 
     return segments

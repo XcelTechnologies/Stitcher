@@ -339,6 +339,20 @@ class MainWindow(QMainWindow):
         self.underlay_check.toggled.connect(self._on_underlay_changed)
         self._underlay_widgets.append(tb.addWidget(self.underlay_check))
 
+        # ---- trim distance (whole-design preference) -----------------------
+        tb.addSeparator()
+        tb.addWidget(QLabel(" Trim mm: "))
+        self.trim_spin = QDoubleSpinBox()
+        self.trim_spin.setRange(0.5, 20.0)
+        self.trim_spin.setSingleStep(0.5)
+        self.trim_spin.setToolTip(
+            "Cut the thread when the needle travels farther than this between "
+            "stitch runs, instead of leaving a connector thread across the design"
+        )
+        self.trim_spin.setValue(self.design.trim_jump_mm)
+        self.trim_spin.valueChanged.connect(self._on_trim_changed)
+        tb.addWidget(self.trim_spin)
+
         tb.addSeparator()
         tb.addAction(self.act_undo)
         tb.addAction(self.act_clear)
@@ -365,6 +379,9 @@ class MainWindow(QMainWindow):
         """Single point of truth for swapping the active design (New/Open)."""
         self.design = design
         self.canvas.set_design(design)
+        self.trim_spin.blockSignals(True)
+        self.trim_spin.setValue(design.trim_jump_mm)
+        self.trim_spin.blockSignals(False)
 
     # ---- slots --------------------------------------------------------------
     def _on_design_changed(self) -> None:
@@ -436,6 +453,12 @@ class MainWindow(QMainWindow):
             self._after_edit()
         else:
             self.canvas.set_underlay(on)
+
+    def _on_trim_changed(self, value: float) -> None:
+        """The trim distance is a whole-design preference, not per-object."""
+        self.design.trim_jump_mm = value
+        self._set_dirty(True)
+        self._refresh()
 
     def _on_type_changed(self, index: int) -> None:
         stitch_type = self.type_combo.itemData(index)

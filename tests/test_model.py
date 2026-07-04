@@ -120,3 +120,11 @@ def test_design_from_minimal_dict_backward_compat():
     assert len(d.strokes) == 1
     assert d.regions == [] and d.texts == []
     assert d.hoop_width_mm > 0
+
+
+def test_design_trim_jump_roundtrips_and_defaults():
+    d = Design()
+    d.trim_jump_mm = 3.5
+    assert Design.from_dict(d.to_dict()).trim_jump_mm == 3.5
+    # old files without the key fall back to the default (1 mm)
+    assert Design.from_dict({}).trim_jump_mm == 1.0
